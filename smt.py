@@ -1,15 +1,7 @@
 from z3 import *
 
-# distances between cities
-num_cities = 4
-'''
-    [0, 0, 1, 0],
-    [0, 0, 0, 1],
-    [0, 1, 0, 0],
-    [1, 0, 0, 0]
-'''
-
 def smt(distances):
+    num_cities = len(distances)
     # matrix to keep track of routes
     routes = [[Int("r_%s_%s" % (i, j)) for j in range(num_cities)] for i in range(num_cities)]
 
@@ -18,30 +10,34 @@ def smt(distances):
 
     s = Optimize()
 
+    # Create order array to eliminate subtours with MTZ constraint
     orders = [Int("order_%s" % i) for i in range(num_cities)]
     for i in range(num_cities):
         s.add(orders[i] >= 0, orders[i] < num_cities)
 
+    # set bounds for routes matrix
     for i in range(num_cities):
       for j in range(num_cities):
         if i != j:
             s.add(routes[i][j] >= 0, routes[i][j] <= 1)
+            # Apply MTZ constraint. This also ensures that city 0 is visited first
             if j != 0:
                 s.add(If(routes[i][j] == 1, orders[j] > orders[i], True))
         else:
             s.add(routes[i][j] == 0)
 
+    # each city should only have one predecessor and one successor. Means that the sum of
+    # each row and column is 1
     for i in range(num_cities):
         s.add(Sum(routes[i]) == 1)
 
-    # ensure we only visit each city once
     for i in range(num_cities):
         constraint = routes[0][i]
         for j in range(1,num_cities):
             constraint += routes[j][i]
         s.add(constraint == 1)
 
-    # ensure the total distance is the sum of the distances between the cities we visit
+    # express total distance as sum of the distances between the cities we visit
     s.add(total_distance == Sum([routes[i][j] * distances[i][j] for i in range(num_cities) for j in range(num_cities)]))
 
     s.minimize(total_distance)
@@ -53,7 +49,6 @@ def smt(distances):
       for i in range(num_cities):
         for j in range(num_cities):
           if model[routes[curr][j]] == 1:
-            #print("Travel from city %s to city %s. Distance %d" % (curr, j, distances[i][j]))
             path.append(curr)
             curr = j
             break

@@ -1,11 +1,10 @@
 from sys import maxsize
 from itertools import permutations
 
-V = 4
-
 
 # implementation of traveling Salesman Problem
 def brute(graph, s):
+    V = len(graph)
     # store all vertex apart from source vertex
     vertex = []
     for i in range(V):

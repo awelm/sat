@@ -1,9 +1,10 @@
+# This code is mostly taken from: https://www.geeksforgeeks.org/traveling-salesman-problem-tsp-implementation/
+
 from sys import maxsize
 from itertools import permutations
 
 
-# implementation of traveling Salesman Problem
-def brute(graph, s):
+def brute(graph, s=0):
     V = len(graph)
     # store all vertex apart from source vertex
     vertex = []
@@ -16,35 +17,17 @@ def brute(graph, s):
     min_path = []
     next_permutation = permutations(vertex)
     for i in next_permutation:
-
         # store current Path weight(cost)
         current_pathweight = 0
-
         # compute current path weight
         k = s
         for j in i:
             current_pathweight += graph[k][j]
             k = j
         current_pathweight += graph[k][s]
-
         # update minimum
         if current_pathweight < min_cost:
             min_cost = current_pathweight
             min_path = i
 
     return min_cost, [0] + list(min_path) + [0]
-
-
-# Driver Code
-if __name__ == "__main__":
-    # matrix representation of graph
-    graph = [
-        [0, 10, 15, 20],
-        [10, 0, 35, 25],
-        [15, 35, 0, 300],
-        [20, 25, 300, 0]
-    ]
-    s = 0
-    cost, path = travellingSalesmanProblem(graph, s)
-    print(cost)
-    print(path)

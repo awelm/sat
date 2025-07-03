@@ -24,7 +24,7 @@ max_size: int = 23
 iterations: int = 10
 smt_enabled: bool = True
 dp_enabled: bool = True
-modified_smt_enabled: bool = True
+smt_modified_enabled: bool = True
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -33,13 +33,13 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=iterations)
     parser.add_argument("--smt", dest="smt", action="store_true", default=smt_enabled)
     parser.add_argument("--dp", dest="dp", action="store_true", default=dp_enabled)
-    parser.add_argument("--smt-ordered", dest="smt_ordered", action="store_true", default=modified_smt_enabled)
+    parser.add_argument("--smt-modified", dest="smt_modified", action="store_true", default=smt_modified_enabled)
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
     smt_enabled_local = args.smt
     dp_enabled_local = args.dp
-    smt_modified_enabled = args.smt_ordered
+    smt_modified_enabled_local = args.smt_modified
 
     smt_times_by_size: Dict[int, List[float]] = {}
     dp_times_by_size: Dict[int, List[float]] = {}
@@ -61,13 +61,14 @@ def main() -> None:
                 print(f"smt: {smt_dist}, {smt_path}")
                 print(f"smt took {smt_time}")
                 smt_times_by_size[size].append(smt_time)
-            if smt_modified_enabled:
-                required_orders = {size - 1: 1} if size > 1 else {0: 0}
+            if smt_modified_enabled_local:
+                # Force the 3rd city to always be second
+                required_orders = {2: 1}
                 start = time.perf_counter()
                 modified_dist, modified_path = smt(distances, required_orders)
                 modified_time = time.perf_counter() - start
-                print(f"smt ordered: {modified_dist}, {modified_path}")
-                print(f"smt ordered took {modified_time}")
+                print(f"smt modified: {modified_dist}, {modified_path}")
+                print(f"smt modified took {modified_time}")
                 smt_modified_times_by_size[size].append(modified_time)
             if dp_enabled_local:
                 start = time.perf_counter()
@@ -87,8 +88,6 @@ def main() -> None:
         print(f"size {size}: {dp_times_by_size[size]}")
         print(f"size {size}: {smt_modified_times_by_size[size]}")
 
-
-
     smt_sizes = [sz for sz, t in smt_times_by_size.items() if t]
     smt_medians = [statistics.median(smt_times_by_size[sz]) for sz in smt_sizes]
     modified_sizes = [sz for sz, t in smt_modified_times_by_size.items() if t]
@@ -104,7 +103,7 @@ def main() -> None:
     if not args.no_plot:
         plt.scatter(dp_sizes, dp_medians, label="dp")
         plt.scatter(smt_sizes, smt_medians, label="smt")
-        plt.scatter(modified_sizes, modified_medians, label="smt_ordered")
+        plt.scatter(modified_sizes, modified_medians, label="smt_modified")
         plt.xlabel("Cities")
         plt.ylabel("Median time (seconds)")
         plt.legend()

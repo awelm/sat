@@ -2,7 +2,18 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from z3 import Bool, BoolRef, Int, Optimize, Sum, If, And, Or, Distinct, sat
+from z3 import Bool, BoolRef, Int, Optimize, Sum, If, And, Or, Distinct, Not, sat, set_param
+
+# Configure Z3 solver parameters once at module level for better performance
+set_param('parallel.enable', True)
+set_param('parallel.threads.max', 8)  # Optimal thread count for this system
+set_param('opt.priority', 'lex')  # Use lexicographic optimization
+set_param('smt.arith.solver', 2)  # Use optimized arithmetic solver
+set_param('smt.phase_selection', 5)  # Use phase selection heuristic
+set_param('smt.restart_strategy', 1)  # Geometric restart strategy
+set_param('smt.random_seed', 0)  # Deterministic results
+set_param('smt.arith.random_initial_value', True)  # Better initial assignments
+set_param('opt.enable_sls', False)  # Disable stochastic local search for exact solutions
 
 
 # Given an adjacency matrix describing a graph, return the minimum cost and route that
@@ -22,34 +33,53 @@ def smt(
     # Successor array: succ[i] represents the city that follows city i in the tour
     succ = [Int(f"succ_{i}") for i in range(num_cities)]
     
+    # Build all constraints in batches for better performance
+    basic_constraints = []
+    cost_terms = []
+    
     # Each city has exactly one successor, and it's a valid city different from itself
     for i in range(num_cities):
-        s.add(And(succ[i] >= 0, succ[i] < num_cities, succ[i] != i))
+        basic_constraints.append(And(succ[i] >= 0, succ[i] < num_cities, succ[i] != i))
+        
+        # Build cost terms at the same time to avoid second loop
+        for j in range(num_cities):
+            if i != j:
+                cost_terms.append(If(succ[i] == j, distances[i][j], 0))
+    
+    # Add all basic constraints at once
+    s.add(And(basic_constraints))
     
     # Ensure it's a permutation (each city is successor of exactly one other city)
     s.add(Distinct(*succ))
 
-    # Total cost is sum of distances from each city to its successor
+    # Add cost constraint
     total_distance = Int("total_distance")
-    s.add(total_distance == Sum([
-        Sum([If(succ[i] == j, distances[i][j], 0) for j in range(num_cities)])
-        for i in range(num_cities)
-    ]))
+    s.add(total_distance == Sum(cost_terms))
 
     # Use order variables to prevent subtours (Miller-Tucker-Zemlin constraints)
     orders = [Int(f"order_{i}") for i in range(num_cities)]
-    s.add(orders[0] == 0)  # Start city has order 0
+    
+    # Build order constraints in batches
+    order_constraints = [orders[0] == 0]  # Start city has order 0
+    mtz_constraints = []
     
     for i in range(1, num_cities):
-        s.add(And(orders[i] >= 1, orders[i] < num_cities))
+        order_constraints.append(And(orders[i] >= 1, orders[i] < num_cities))
     
-    # MTZ constraints: if i->j, then order[j] = order[i] + 1 (mod n)
+    # Build MTZ constraints efficiently
     for i in range(num_cities):
-        for j in range(1, num_cities):  # j != 0 to avoid wrapping issues
+        for j in range(num_cities):
             if i != j:
-                s.add(If(succ[i] == j, 
-                         orders[j] == orders[i] + 1, 
-                         True))
+                if j == 0:
+                    # Special case: if successor is city 0, then current order must be n-1
+                    mtz_constraints.append(If(succ[i] == j, orders[i] == num_cities - 1, True))
+                else:
+                    # Normal case: successor's order = current order + 1
+                    mtz_constraints.append(If(succ[i] == j, orders[j] == orders[i] + 1, True))
+    
+    # Add all order constraints at once
+    s.add(And(order_constraints))
+    s.add(And(mtz_constraints))
 
     # Handle required orders constraint
     if required_orders:

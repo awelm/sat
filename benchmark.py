@@ -24,6 +24,7 @@ max_size: int = 23
 iterations: int = 10
 smt_enabled: bool = True
 dp_enabled: bool = True
+ordered_enabled: bool = False
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -32,18 +33,22 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=iterations)
     parser.add_argument("--smt", dest="smt", action="store_true", default=smt_enabled)
     parser.add_argument("--dp", dest="dp", action="store_true", default=dp_enabled)
+    parser.add_argument("--smt-ordered", dest="smt_ordered", action="store_true", default=ordered_enabled)
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
     smt_enabled_local = args.smt
     dp_enabled_local = args.dp
+    smt_ordered_enabled = args.smt_ordered
 
     smt_times_by_size: Dict[int, List[float]] = {}
     dp_times_by_size: Dict[int, List[float]] = {}
+    smt_ordered_times_by_size: Dict[int, List[float]] = {}
 
     for size in range(args.min_size, args.max_size + 1):
         smt_times_by_size[size] = []
         dp_times_by_size[size] = []
+        smt_ordered_times_by_size[size] = []
         for _ in range(args.iterations):
             distances = [[random.randint(0, 100) for _ in range(size)] for _ in range(size)]
             for i in range(size):
@@ -56,6 +61,14 @@ def main() -> None:
                 print(f"smt: {smt_dist}, {smt_path}")
                 print(f"smt took {smt_time}")
                 smt_times_by_size[size].append(smt_time)
+            if smt_ordered_enabled:
+                required_orders = {size - 1: 1} if size > 1 else {0: 0}
+                start = time.perf_counter()
+                ordered_dist, ordered_path = smt(distances, required_orders)
+                ordered_time = time.perf_counter() - start
+                print(f"smt ordered: {ordered_dist}, {ordered_path}")
+                print(f"smt ordered took {ordered_time}")
+                smt_ordered_times_by_size[size].append(ordered_time)
             if dp_enabled_local:
                 start = time.perf_counter()
                 dp_dist, dp_path = dp(distances)
@@ -68,25 +81,35 @@ def main() -> None:
                     print("Agree")
                 else:
                     print("DISAGREE")
+            if smt_ordered_enabled and dp_enabled_local:
+                if ordered_dist == dp_dist:
+                    print("Ordered agree")
+                else:
+                    print("Ordered disagree")
 
     for size in smt_times_by_size:
         print(f"size {size}: {smt_times_by_size[size]}")
         print(f"size {size}: {dp_times_by_size[size]}")
+        print(f"size {size}: {smt_ordered_times_by_size[size]}")
 
 
 
     smt_sizes = [sz for sz, t in smt_times_by_size.items() if t]
     smt_medians = [statistics.median(smt_times_by_size[sz]) for sz in smt_sizes]
+    ordered_sizes = [sz for sz, t in smt_ordered_times_by_size.items() if t]
+    ordered_medians = [statistics.median(smt_ordered_times_by_size[sz]) for sz in ordered_sizes]
 
     dp_sizes = [sz for sz, t in dp_times_by_size.items() if t]
     dp_medians = [statistics.median(dp_times_by_size[sz]) for sz in dp_sizes]
 
     print("SMT size → median_time:", list(zip(smt_sizes, smt_medians)))
+    print("Ordered size → median_time:", list(zip(ordered_sizes, ordered_medians)))
     print("DP size → median_time:", list(zip(dp_sizes, dp_medians)))
 
     if not args.no_plot:
         plt.scatter(dp_sizes, dp_medians, label="dp")
         plt.scatter(smt_sizes, smt_medians, label="smt")
+        plt.scatter(ordered_sizes, ordered_medians, label="smt_ordered")
         plt.xlabel("Cities")
         plt.ylabel("Median time (seconds)")
         plt.legend()

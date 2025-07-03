@@ -61,8 +61,8 @@ def main() -> None:
                 print(f"smt: {smt_dist}, {smt_path}")
                 print(f"smt took {smt_time}")
                 smt_times_by_size[size].append(smt_time)
-            if smt_modified_enabled_local:
-                # Force the 3rd city to always be second
+            # Force the 3rd city to always be second
+            if smt_modified_enabled_local and size >= 3:
                 required_orders = {2: 1}
                 start = time.perf_counter()
                 modified_dist, modified_path = smt(distances, required_orders)

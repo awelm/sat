@@ -11,8 +11,12 @@ def smt(
     distances: List[List[int]],
     required_orders: Optional[Dict[int, int]] = None,
 ) -> Tuple[int, List[int]]:
-    
     num_cities = len(distances)
+    if num_cities == 0:
+        return -1, []
+    if num_cities == 1:
+        return 0, [0, 0]
+
     s = Optimize()
 
     # Variables representing our decision to use an edge or not.

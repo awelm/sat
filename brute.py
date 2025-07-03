@@ -4,12 +4,12 @@ from sys import maxsize
 from itertools import permutations
 
 
-def brute(graph, s=0):
+def brute(graph, start=0):
     V = len(graph)
     # store all vertex apart from source vertex
     vertex = []
     for i in range(V):
-        if i != s:
+        if i != start:
             vertex.append(i)
 
     # store minimum weight Hamiltonian Cycle
@@ -20,14 +20,14 @@ def brute(graph, s=0):
         # store current Path weight(cost)
         current_pathweight = 0
         # compute current path weight
-        k = s
+        k = start
         for j in i:
             current_pathweight += graph[k][j]
             k = j
-        current_pathweight += graph[k][s]
+        current_pathweight += graph[k][start]
         # update minimum
         if current_pathweight < min_cost:
             min_cost = current_pathweight
             min_path = i
 
-    return min_cost, [0] + list(min_path) + [0]
+    return min_cost, [start] + list(min_path) + [start]

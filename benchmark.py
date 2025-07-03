@@ -24,7 +24,7 @@ max_size: int = 23
 iterations: int = 10
 smt_enabled: bool = True
 dp_enabled: bool = True
-modified_smt_enabled: bool = False
+modified_smt_enabled: bool = True
 
 def main() -> None:
     parser = argparse.ArgumentParser()

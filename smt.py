@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from z3 import Bool, BoolRef, Int, Optimize, Sum, If, And, sat
 
 
 # Given an adjacency matrix describing a graph, return the minimum cost and route that
 # starts at city 0, visits each city exactly once and returns to city 0.
-def smt(distances: List[List[int]]) -> Tuple[int, List[int]]:
+def smt(
+    distances: List[List[int]],
+    required_orders: Optional[Dict[int, int]] = None,
+) -> Tuple[int, List[int]]:
+    
     num_cities = len(distances)
     s = Optimize()
 
@@ -36,6 +40,12 @@ def smt(distances: List[List[int]]) -> Tuple[int, List[int]]:
     s.add(orders[0] == 0)
     for i in range(1, num_cities):
         s.add(And(orders[i] >= 1, orders[i] < num_cities))
+
+    if required_orders:
+        for city, day in required_orders.items():
+            if not (0 <= city < num_cities and 0 <= day < num_cities):
+                raise ValueError("required_orders contains out of range values")
+            s.add(orders[city] == day)
 
     # Add constraint that binds edges_used with the order in which cities are visited.
     for i in range(num_cities):

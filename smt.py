@@ -1,14 +1,20 @@
-from z3 import Bool, Int, Optimize, Sum, If, And, sat
+from __future__ import annotations
+
+from typing import List, Tuple
+
+from z3 import Bool, BoolRef, Int, Optimize, Sum, If, And, sat
 
 
 # Given an adjacency matrix describing a graph, return the minimum cost and route that
 # starts at city 0, visits each city exactly once and returns to city 0.
-def smt(distances):
+def smt(distances: List[List[int]]) -> Tuple[int, List[int]]:
     num_cities = len(distances)
     s = Optimize()
 
     # Variables representing our decision to use an edge or not.
-    edges_used = [[Bool(f"r_{i}_{j}") for j in range(num_cities)] for i in range(num_cities)]
+    edges_used: List[List[BoolRef]] = [
+        [Bool(f"r_{i}_{j}") for j in range(num_cities)] for i in range(num_cities)
+    ]
 
     # Variable representing the total distance traveled. If we use an edge then its
     # distance is added to total_distance.
@@ -64,7 +70,12 @@ def smt(distances):
 
 
 # Return the optimal tour path found by the solver.
-def get_tour_path(s, start_city, num_cities, routes):
+def get_tour_path(
+    s: Optimize,
+    start_city: int,
+    num_cities: int,
+    routes: List[List[BoolRef]],
+) -> List[int]:
     model = s.model()
     curr_city = start_city
     path = []

@@ -1,10 +1,13 @@
 # This code is mostly taken from: https://www.geeksforgeeks.org/traveling-salesman-problem-tsp-implementation/
 
+from __future__ import annotations
+
 from sys import maxsize
 from itertools import permutations
+from typing import List, Tuple
 
 
-def brute(graph, start=0):
+def brute(graph: List[List[int]], start: int = 0) -> Tuple[int, List[int]]:
     V = len(graph)
     # store all vertex apart from source vertex
     vertex = []

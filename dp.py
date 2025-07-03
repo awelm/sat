@@ -1,9 +1,21 @@
 # This code is mostly taken from: https://www.interviewbit.com/blog/travelling-salesman-problem/
 
+from __future__ import annotations
+
+from typing import Dict, List, Tuple
+
 MAX = 999999
 
 
-def TSP(mask, pos, graph, dp, next_move, n, visited):
+def TSP(
+    mask: int,
+    pos: int,
+    graph: List[List[int]],
+    dp: List[List[int]],
+    next_move: Dict[Tuple[int, int], int],
+    n: int,
+    visited: int,
+) -> int:
     if mask == visited:
         return graph[pos][0]
 
@@ -24,7 +36,7 @@ def TSP(mask, pos, graph, dp, next_move, n, visited):
     return ans
 
 
-def dp(graph):
+def dp(graph: List[List[int]]) -> Tuple[int, List[int]]:
     n = len(graph)
     visited = (1 << n) - 1
 

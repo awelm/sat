@@ -12,8 +12,9 @@ def smt(
     required_orders: Optional[Dict[int, int]] = None,
 ) -> Tuple[int, List[int]]:
     num_cities = len(distances)
+    if num_cities == 0:
+        return -1, []
     if num_cities == 1:
-        # Trivial case: start and end at the only city with zero cost
         return 0, [0, 0]
 
     s = Optimize()

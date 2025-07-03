@@ -98,7 +98,7 @@ def main() -> None:
     dp_medians = [statistics.median(dp_times_by_size[sz]) for sz in dp_sizes]
 
     print("SMT size → median_time:", list(zip(smt_sizes, smt_medians)))
-    print("Modified size → median_time:", list(zip(modified_sizes, modified_medians)))
+    print("Modified SMT size → median_time:", list(zip(modified_sizes, modified_medians)))
     print("DP size → median_time:", list(zip(dp_sizes, dp_medians)))
 
     if not args.no_plot:

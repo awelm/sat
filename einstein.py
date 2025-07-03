@@ -26,15 +26,15 @@ s.add(Spaniard == Dog) # Constraint 3: The Spaniard owns the dog
 s.add(Coffee == Green) # Constraint 4: Coffee is drunk in the green house
 s.add(Ukrainian == Tea) # Constraint 5: The Ukrainian drinks tea
 s.add(Green == Ivory + 1) # Constraint 6: The green house is immediately to the right of the ivory house
-s.add(OldGold == Snails) # Constraint 7: The Old Gold smoker owns snails
-s.add(Kools == Yellow) # Constraint 8: Kools are smoked in the yellow house
-s.add(Milk == 3)  # Constraint 9: Milk is drunk in the middle house (i.e. the third house)
-s.add(Norwegian == 1) # Constraint 10: The Norwegian lives in the first house
-s.add(Or(Chesterfield == Fox + 1, Chesterfield == Fox - 1))  # Constraint 11: The man who smokes Chesterfields lives in the house next to the man with the fox
-s.add(Or(Kools == Horse + 1, Kools == Horse - 1))  # Constraint 12: Kools are smoked in the house next to the house where the horse is kept
-s.add(LuckyStrike == OrangeJuice) # Constraint 13: The Lucky Strike smoker drinks orange juice
-s.add(Japanese == Parliament) # Constraint 14: The Japanese smokes Parliaments
-s.add(Or(Norwegian == Blue + 1, Norwegian == Blue - 1))  # Constraint 15: The Norwegian lives next to the blue house
+s.add(OldGold == Snails) # And so on...
+s.add(Kools == Yellow)
+s.add(Milk == 3)
+s.add(Norwegian == 1)
+s.add(Or(Chesterfield == Fox + 1, Chesterfield == Fox - 1))
+s.add(Or(Kools == Horse + 1, Kools == Horse - 1))
+s.add(LuckyStrike == OrangeJuice)
+s.add(Japanese == Parliament)
+s.add(Or(Norwegian == Blue + 1, Norwegian == Blue - 1))
 
 if s.check() == unsat:
     print("Unsatisfiable")

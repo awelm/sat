@@ -2,18 +2,21 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from z3 import Bool, BoolRef, Int, Optimize, Sum, If, And, Or, Distinct, Not, sat, set_param
+from z3 import Int, Optimize, Sum, If, And, Distinct, sat, set_param
+
+# Global configuration
+DEFAULT_TIMEOUT_MS = 600000  # 10 minutes
 
 # Configure Z3 solver parameters once at module level for better performance
 set_param('parallel.enable', True)
-set_param('parallel.threads.max', 8)  # Optimal thread count for this system
-set_param('opt.priority', 'lex')  # Use lexicographic optimization
-set_param('smt.arith.solver', 2)  # Use optimized arithmetic solver
-set_param('smt.phase_selection', 5)  # Use phase selection heuristic
-set_param('smt.restart_strategy', 1)  # Geometric restart strategy
-set_param('smt.random_seed', 0)  # Deterministic results
-set_param('smt.arith.random_initial_value', True)  # Better initial assignments
-set_param('opt.enable_sls', False)  # Disable stochastic local search for exact solutions
+set_param('parallel.threads.max', 8)
+set_param('opt.priority', 'lex')
+set_param('smt.arith.solver', 2)
+set_param('smt.phase_selection', 5)
+set_param('smt.restart_strategy', 1)
+set_param('smt.random_seed', 0)
+set_param('smt.arith.random_initial_value', True)
+set_param('opt.enable_sls', False)
 
 
 # Given an adjacency matrix describing a graph, return the minimum cost and route that
@@ -21,6 +24,7 @@ set_param('opt.enable_sls', False)  # Disable stochastic local search for exact 
 def smt(
     distances: List[List[int]],
     required_orders: Optional[Dict[int, int]] = None,
+    timeout_ms: int = DEFAULT_TIMEOUT_MS,
 ) -> Tuple[int, List[int]]:
     num_cities = len(distances)
     if num_cities == 0:
@@ -29,56 +33,40 @@ def smt(
         return 0, [0, 0]
 
     s = Optimize()
-
-    # Successor array: succ[i] represents the city that follows city i in the tour
+    s.set(timeout=timeout_ms)
     succ = [Int(f"succ_{i}") for i in range(num_cities)]
     
-    # Build all constraints in batches for better performance
-    basic_constraints = []
+    # Basic constraints: each city has exactly one valid successor
+    constraints = [Distinct(*succ)]
     cost_terms = []
     
-    # Each city has exactly one successor, and it's a valid city different from itself
     for i in range(num_cities):
-        basic_constraints.append(And(succ[i] >= 0, succ[i] < num_cities, succ[i] != i))
-        
-        # Build cost terms at the same time to avoid second loop
+        constraints.extend([succ[i] >= 0, succ[i] < num_cities, succ[i] != i])
         for j in range(num_cities):
             if i != j:
                 cost_terms.append(If(succ[i] == j, distances[i][j], 0))
     
-    # Add all basic constraints at once
-    s.add(And(basic_constraints))
+    s.add(And(constraints))
     
-    # Ensure it's a permutation (each city is successor of exactly one other city)
-    s.add(Distinct(*succ))
-
-    # Add cost constraint
+    # Minimize total distance
     total_distance = Int("total_distance")
     s.add(total_distance == Sum(cost_terms))
 
-    # Use order variables to prevent subtours (Miller-Tucker-Zemlin constraints)
+    # Prevent subtours with Miller-Tucker-Zemlin constraints
     orders = [Int(f"order_{i}") for i in range(num_cities)]
-    
-    # Build order constraints in batches
-    order_constraints = [orders[0] == 0]  # Start city has order 0
-    mtz_constraints = []
+    mtz_constraints = [orders[0] == 0]
     
     for i in range(1, num_cities):
-        order_constraints.append(And(orders[i] >= 1, orders[i] < num_cities))
+        mtz_constraints.extend([orders[i] >= 1, orders[i] < num_cities])
     
-    # Build MTZ constraints efficiently
     for i in range(num_cities):
         for j in range(num_cities):
             if i != j:
                 if j == 0:
-                    # Special case: if successor is city 0, then current order must be n-1
                     mtz_constraints.append(If(succ[i] == j, orders[i] == num_cities - 1, True))
                 else:
-                    # Normal case: successor's order = current order + 1
                     mtz_constraints.append(If(succ[i] == j, orders[j] == orders[i] + 1, True))
     
-    # Add all order constraints at once
-    s.add(And(order_constraints))
     s.add(And(mtz_constraints))
 
     # Handle required orders constraint
@@ -88,7 +76,6 @@ def smt(
                 raise ValueError("required_orders contains out of range values")
             s.add(orders[city] == day)
 
-    # Call the solver and return the minimum cost and tour path.
     s.minimize(total_distance)
 
     if s.check() == sat:
@@ -99,13 +86,8 @@ def smt(
     return -1, []
 
 
-# Return the optimal tour path found by the solver.
-def get_tour_path(
-    model,
-    start_city: int,
-    num_cities: int,
-    succ: List[Int],
-) -> List[int]:
+def get_tour_path(model, start_city: int, num_cities: int, succ) -> List[int]:
+    """Extract tour path from successor variables."""
     curr_city = start_city
     path = []
     for _ in range(num_cities):

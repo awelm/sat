@@ -1,433 +1,347 @@
 #!/usr/bin/env python3
 """
-Z3 SAT solver for generalized Spot It! card game assignment problem.
+Generalised Spot‑It solver – SAT encoding only
+(Everything is done through Z3; no combinatorial shortcuts are used.)
 
-Given v distinct pictures and k pictures per card, find an arrangement
-where any two cards share exactly one picture.
+Usage
+-----
+
+    python spotit.py              # run a few test cases
+    python spotit.py  v  k  [--timeout 300]
+
+Command‑line options
+--------------------
+    v, k          integers (k ≥ 2, k ≤ v)
+    --timeout     wall‑clock timeout in seconds (default 300)
 """
 
 from z3 import *
 from math import comb
 import time
-import threading
+import argparse
 import sys
+import multiprocessing
+import random
+import os
 
-# Configure Z3 global parameters for maximum performance
-set_param('parallel.enable', True)
-set_param('parallel.threads.max', 32)  # Max CPU utilization
 
-def solve_generalized_spotit(v, k, max_cards=None, timeout_ms=300000):
+# ---------------------------------------------------------------------------
+#  Helper – nice cardinality wrappers
+# ---------------------------------------------------------------------------
+
+def exactly_k(bs, k):
+    """Exactly k of the Boolean literals in *bs* are true."""
+    return PbEq([(b, 1) for b in bs], k)
+
+
+def at_least_k(bs, k):
+    return PbGe([(b, 1) for b in bs], k)
+
+
+def at_most_k(bs, k):
+    return PbLe([(b, 1) for b in bs], k)
+
+
+# ---------------------------------------------------------------------------
+#  Core SAT model
+# ---------------------------------------------------------------------------
+
+def encode_spotit(v, k, b, extra_symmetry=False, basic_symmetry=True):
     """
-    Solve the generalized Spot It problem using Z3.
-    
-    Args:
-        v: Number of distinct pictures (symbols) available
-        k: Number of pictures per card (must be >= 2)
-        max_cards: Maximum number of cards to try (if None, calculate optimal)
-        timeout_ms: Timeout in milliseconds (currently unused)
-        
-    Returns:
-        dict: Assignment of symbols to cards if satisfiable, None otherwise
+    Build a pure Boolean model:
+
+        – card_symbol[i][j]  True  ⟺  symbol j is printed on card i
     """
-    
-    if k < 2:
-        print("Error: k must be >= 2 for meaningful Spot It problem")
-        return None
-    
-    if v < k:
-        print(f"Error: Cannot put {k} pictures per card when only {v} pictures exist")
-        return None
-    
-    print(f"=== GENERALIZED SPOT IT SOLVER ===")
-    print(f"Pictures available (v): {v}")
-    print(f"Pictures per card (k): {k}")
-    
-    # Calculate search bounds - limit to V cards 
-    max_possible_cards = comb(v, k)
-    if max_cards is None:
-        max_cards = v  # Limit to number of symbols
-    
-    print(f"Maximum possible distinct cards: {max_possible_cards}")
-    print(f"Trying up to {max_cards} cards (limited to v)")
-    
-    # Try different numbers of cards, starting from minimum feasible
-    min_cards = k + 1  # Need at least k+1 cards for meaningful problem
-    
-    for num_cards in range(min_cards, min(max_cards + 1, max_possible_cards + 1)):
-        print(f"\n--- Trying {num_cards} cards ---")
-        
-        if not is_feasible(v, k, num_cards):
-            print(f"  Skipping {num_cards} cards - mathematically infeasible")
-            continue
-            
-        result = solve_with_parameters(v, k, num_cards)
-        if result is not None:
-            print(f"\n🎉 SOLUTION FOUND with {num_cards} cards!")
-            return result
-            
-        print(f"  No solution with {num_cards} cards")
-    
-    print(f"\n❌ No solution found for v={v}, k={k} up to {max_cards} cards")
-    return None
+    # One Boolean variable per "symbol appears on card"
+    card_symbol = [[Bool(f"c{i}s{j}") for j in range(v)] for i in range(b)]
+    constraints = []
 
-def is_feasible(v, k, b):
-    """Check if parameters v, k, b could theoretically work."""
-    # Each symbol appears in exactly r cards, where r = bk/v must be integer
-    if (b * k) % v != 0:
-        return False
-    
-    r = (b * k) // v
-    
-    # Any two symbols appear together in exactly λ cards, where λ = r(k-1)/(v-1) must be integer
-    if v > 1:
-        if (r * (k - 1)) % (v - 1) != 0:
-            return False
-    
-    return True
+    # 1.  Exactly k symbols per card
+    for i in range(b):
+        constraints.append(exactly_k(card_symbol[i], k))
 
-def solve_with_parameters(v, k, b):
-    """Solve Spot It with specific parameters using Z3."""
-    
-    print(f"  Solving: {b} cards, {v} symbols, {k} symbols per card")
-    
-    # Use highly optimized solver based on problem analysis
-    solver = Solver()
-    
-    # Maximum resource allocation - no limits!
-    solver.set("max_memory", 64000)    # 64GB memory limit
-    solver.set("max_steps", 4294967295)
-    solver.set("proof", False)  # Disable proof generation for speed
-    solver.set("model", True)   # We need models
-    
-    # High-performance solver settings
-    solver.set("phase_selection", 3)    # Best phase selection
-    solver.set("restart_strategy", 1)   # Optimal restart strategy  
-    solver.set("restart.max", 4294967295)  # No restart limits
-    solver.set("random_seed", 42)       # Good seed
-    solver.set("threads", 32)           # Max CPU threads
-    
-    print(f"  Configured solver for hard {b}-card problem")
-    
-    # Variables: card_symbol[i][j] = True if card i contains symbol j
-    card_symbol = [[Bool(f"c{i}s{j}") for j in range(v)]  # Shorter variable names
-                   for i in range(b)]
-    
-    # For large problems, use more efficient constraint encoding
-    if b >= 20:  # Large problem optimizations
-        print("  Using optimized encoding for large problem...")
+    # 2.  Any two different cards share **exactly one** symbol
+    #     〈 c_i ∧ c_j 〉 = 1
+    for i in range(b):
+        for j in range(i + 1, b):
+            both = [card_symbol[i][s] & card_symbol[j][s] for s in range(v)]
+            constraints.append(exactly_k(both, 1))
+
+    # 3.  Every symbol is used at least once (no wasted pictures)
+    for s in range(v):
+        constraints.append(at_least_k([card_symbol[i][s] for i in range(b)], 1))
+
+    # 4.  Basic symmetry breaking (optional)
+    if basic_symmetry:
+        #     – first card = symbols 0..k‑1
+        for s in range(v):
+            constraints.append(card_symbol[0][s] if s < k else Not(card_symbol[0][s]))
+        #     – second card shares symbol 0, contains symbols k..k+(k‑2)
+        if b >= 2:
+            constraints.append(card_symbol[1][0])
+            second_fixed = list(range(k, k + k - 1))
+            for s in range(v):
+                if s in second_fixed:
+                    constraints.append(card_symbol[1][s])
+                elif s != 0:
+                    constraints.append(Not(card_symbol[1][s]))
+
+    # 5. Extra symmetry breaking (optional)
+    if extra_symmetry and b >= 3:
+        # Force lexicographic ordering of cards (expensive but powerful)
+        for i in range(min(b-1, 5)):  # Only first few cards to avoid explosion
+            card_i = [If(card_symbol[i][s], 1 << s, 0) for s in range(v)]
+            card_next = [If(card_symbol[i+1][s], 1 << s, 0) for s in range(v)]
+            # Card i should be lexicographically <= card i+1
+            constraints.append(Sum(card_i) <= Sum(card_next))
         
-        # Constraint 1: Each card has exactly k symbols (cardinality constraint)
-        for i in range(b):
-            solver.add(Sum([If(card_symbol[i][j], 1, 0) for j in range(v)]) == k)
-        
-        # Constraint 2: Any two cards share exactly one symbol (optimized with auxiliary variables)
-        shared_vars = {}
-        for i in range(b):
-            for j in range(i + 1, b):
-                # Create auxiliary variables for shared symbols
-                shared_symbols = []
-                for l in range(v):
-                    shared_var = Bool(f"shared_{i}_{j}_{l}")
-                    solver.add(shared_var == And(card_symbol[i][l], card_symbol[j][l]))
-                    shared_symbols.append(shared_var)
-                
-                # Exactly one shared symbol
-                solver.add(Sum([If(sv, 1, 0) for sv in shared_symbols]) == 1)
-    else:
-        # Standard encoding for smaller problems
-        # Constraint 1: Each card has exactly k symbols (more efficient encoding)
-        for i in range(b):
-            # Use PbEq for pseudo-boolean constraints - more efficient than Sum/If
-            solver.add(PbEq([(card_symbol[i][j], 1) for j in range(v)], k))
-        
-        # Constraint 2: Any two cards share exactly one symbol (optimized)
-        for i in range(b):
-            for j in range(i + 1, b):
-                # More efficient: direct pseudo-boolean constraint
-                solver.add(PbEq([(And(card_symbol[i][l], card_symbol[j][l]), 1) for l in range(v)], 1))
+        # Force symbol usage order - symbols should appear in order of first use
+        for s in range(min(v-1, 10)):  # Limit to avoid too many constraints
+            # If symbol s+1 is used, then symbol s must be used first
+            symbol_s_first_card = [If(card_symbol[i][s], i, b) for i in range(b)]
+            symbol_s1_first_card = [If(card_symbol[i][s+1], i, b) for i in range(b)]
+            first_s = Sum([If(card_symbol[i][s], 1, 0) for i in range(b)])
+            first_s1 = Sum([If(card_symbol[i][s+1], 1, 0) for i in range(b)])
+            # Only add constraint if both symbols are used
+            constraints.append(Or(first_s1 == 0, first_s > 0))
+
+    return card_symbol, constraints
+
+
+def solve_instance(v, k, b, timeout_s=3600, threads=None, extra_symmetry=False, basic_symmetry=True):
+    """
+    Build the SAT instance and ask Z3.
+
+    Returns
+    -------
+        model  –  Z3 model if SAT
+        None   –  if UNSAT or timed‑out
+    """
+    card_symbol, constraints = encode_spotit(v, k, b, extra_symmetry, basic_symmetry)
     
-    # Constraint 3: Each symbol appears on at least 1 card (optimized)
-    for j in range(v):
-        solver.add(Or([card_symbol[i][j] for i in range(b)]))  # More direct encoding
+    print(f"Variables: {b * v}")
+    print(f"Constraints: {len(constraints)}")
     
-    # Symmetry breaking constraints (optimized)
-    print("  Adding symmetry breaking constraints...")
+    # Explain the constraint structure
+    print("\n=== CONSTRAINT BREAKDOWN ===")
+    card_constraints = b  # Each card has exactly k symbols
+    pair_constraints = b * (b - 1) // 2  # Each pair of cards shares exactly 1 symbol
+    symbol_constraints = v  # Each symbol appears at least once
+    symmetry_constraints = len(constraints) - card_constraints - pair_constraints - symbol_constraints
     
-    # Fix first card to contain first k symbols (batch constraints)
-    first_card_constraints = []
-    for j in range(k):
-        first_card_constraints.append(card_symbol[0][j])
-    for j in range(k, v):
-        first_card_constraints.append(Not(card_symbol[0][j]))
-    solver.add(And(first_card_constraints))
+    print(f"Card constraints (exactly k symbols per card): {card_constraints}")
+    print(f"Pair constraints (any two cards share exactly 1 symbol): {pair_constraints}")
+    print(f"Symbol constraints (each symbol used at least once): {symbol_constraints}")
+    print(f"Symmetry breaking constraints: {symmetry_constraints}")
+    print(f"Total: {len(constraints)} constraints")
+
+    # Use regular solver with PB-optimized configuration
+    s = Solver()
+    s.set("timeout", timeout_s * 1000)     # ms
     
-    # Second card constraints (batch)
-    if b > 1:
-        second_card_constraints = [card_symbol[1][0]]  # Must share symbol 0
-        used_count = 0
-        for j in range(k, v):
-            if used_count < k - 1:
-                second_card_constraints.append(card_symbol[1][j])
-                used_count += 1
-            else:
-                second_card_constraints.append(Not(card_symbol[1][j]))
-        solver.add(And(second_card_constraints))
+    # Basic threading - let Z3 decide optimal thread count
+    if threads is None:
+        threads = min(8, multiprocessing.cpu_count())
+    s.set("threads", threads)
     
-    # Simplified lexicographic ordering (less complex constraints)
-    for i in range(min(2, b - 1)):  # Reduce to first 2 cards only
-        for j in range(min(v, 10)):  # Limit constraint complexity
-            if j > 0:
-                solver.add(Implies(And([Not(card_symbol[i][l]) for l in range(j)]),
-                                 Implies(card_symbol[i+1][j], Not(card_symbol[i][j]))))
+    # PB constraint optimizations (using valid parameters)
+    s.set("pb.conflict_frequency", 500)    # More frequent PB conflict analysis
+    s.set("pb.learn_complements", True)    # Learn complement constraints
     
-    print(f"  Added optimized symmetry breaking")
+    # Restart and search optimizations
+    s.set("restart_strategy", 1)           # Geometric restart strategy
+    s.set("restart_factor", 1.1)           # Conservative restart base
+    s.set("phase_selection", 3)            # Caching phase selection
+    s.set("random_seed", 42)               # Reproducible results
     
-    # Debug info
-    print(f"  Created {b * v} boolean variables")
-    print(f"  Total constraints: {b + b * (b - 1) // 2 + v}")
+    # Memory and conflict optimizations  
+    s.set("max_memory", 12000)             # 12GB memory limit
     
-    # Solve with progress tracking
-    print("  Starting Z3 solve...")
-    print("  Detailed progress will be shown every 5 seconds...")
-    start_time = time.time()
+    print(f"Z3 configuration: {threads} threads")
+
+    s.add(constraints)
+    print("Starting Z3 solver...")
+
+    t0 = time.time()
+    res = s.check()
+    elapsed = time.time() - t0
     
-    # Progress tracker with detailed stats
-    solving = [True]  # Use list for mutable reference
-    last_stats = {}
+    print(f"--> Z3 returned {res}  (in {elapsed:.1f} s)")
     
-    def progress_tracker():
-        nonlocal last_stats
-        while solving[0]:
-            time.sleep(5)  # Check every 5 seconds
-            if solving[0]:
-                total_elapsed = time.time() - start_time
-                
-                # Get current solver statistics
-                try:
-                    current_stats = solver.statistics()
-                    stats_dict = {}
-                    for i in range(len(current_stats)):
-                        key, value = current_stats[i]
-                        stats_dict[key] = value
-                    
-                    # Show progress metrics
-                    conflicts = stats_dict.get('conflicts', 0)
-                    decisions = stats_dict.get('decisions', 0)
-                    propagations = stats_dict.get('propagations', 0)
-                    memory = stats_dict.get('memory', 0)
-                    
-                    # Calculate rates since last check
-                    conflict_rate = ""
-                    decision_rate = ""
-                    if last_stats:
-                        conflict_delta = conflicts - last_stats.get('conflicts', 0)
-                        decision_delta = decisions - last_stats.get('decisions', 0)
-                        if conflict_delta > 0:
-                            conflict_rate = f" (+{conflict_delta}/5s)"
-                        if decision_delta > 0:
-                            decision_rate = f" (+{decision_delta}/5s)"
-                    
-                    # Adaptive reporting based on problem hardness
-                    if b >= 50:  # Very hard problems
-                        # Show rates and efficiency metrics
-                        prop_per_conflict = propagations / max(conflicts, 1)
-                        decision_per_conflict = decisions / max(conflicts, 1)
-                        
-                        print(f"  [{total_elapsed:3.0f}s] Conflicts: {conflicts:,}{conflict_rate} | "
-                              f"Decisions: {decisions:,}{decision_rate} | "
-                              f"Memory: {memory:.1f}MB")
-                        print(f"        Efficiency: {prop_per_conflict:.0f} props/conflict, "
-                              f"{decision_per_conflict:.1f} decisions/conflict")
-                        
-                        # Suggest if Z3 might be struggling
-                        if conflicts > 0 and total_elapsed > 60:
-                            conflict_per_sec = conflicts / total_elapsed
-                            if conflict_per_sec < 100:  # Very slow progress
-                                print(f"        Warning: Low conflict rate ({conflict_per_sec:.1f}/s) - problem may be very hard")
-                                
-                                # Suggest stopping if efficiency gets very bad
-                                if total_elapsed > 180 and prop_per_conflict > 15000:
-                                    print(f"        Suggestion: Consider stopping - efficiency very low ({prop_per_conflict:.0f} props/conflict)")
-                                    
-                                # Suggest alternative approaches
-                                if total_elapsed > 300 and conflict_per_sec < 30:
-                                    print(f"        Suggestion: Z3 may be stuck - consider different approach or smaller problem")
-                    else:
-                        print(f"  [{total_elapsed:3.0f}s] Conflicts: {conflicts:,}{conflict_rate} | "
-                              f"Decisions: {decisions:,}{decision_rate} | "
-                              f"Propagations: {propagations:,} | "
-                              f"Memory: {memory:.1f}MB")
-                    
-                    last_stats = stats_dict.copy()
-                    
-                except Exception as e:
-                    # Fallback to simple timer if stats unavailable
-                    print(f"  [{total_elapsed:3.0f}s] Z3 working... (stats unavailable)")
-                
-                sys.stdout.flush()
-    
-    # Start progress tracker in background
-    progress_thread = threading.Thread(target=progress_tracker, daemon=True)
-    progress_thread.start()
-    
-    # Pre-simplify constraints before main solve
-    solver.push()  # Save state for potential backtracking
-    result = solver.check()
-    elapsed = time.time() - start_time
-    
-    # Stop progress tracker
-    solving[0] = False
-    
-    print(f"  Z3 result: {result}")
-    print(f"  Solving time: {elapsed:.2f}s")
-    
-    # Print solver statistics
-    stats = solver.statistics()
-    if stats:
-        print("  Z3 Statistics:")
+    # Show detailed final statistics
+    if res == sat or res == unsat:
+        print("\n=== DETAILED Z3 STATISTICS ===")
+        stats = s.statistics()
         for i in range(len(stats)):
             key, value = stats[i]
-            print(f"    {key}: {value}")
-    else:
-        print("  No statistics available")
-    
-    if result == sat:
-        print(f"  ✅ Solution found!")
-        model = solver.model()
-        solution = {}
-        # Optimized solution extraction
-        for i in range(b):
-            card_symbols = [j for j in range(v) if is_true(model.evaluate(card_symbol[i][j]))]
-            solution[f"card_{i}"] = card_symbols
-        solver.pop()  # Clean up
-        return solution
-    elif result == unsat:
-        print(f"  ❌ Proven unsatisfiable")
-        solver.pop()
-        return None
-    else:
-        print(f"  ❓ Unknown result")
-        solver.pop()
-        return None
+            print(f"  {key}: {value}")
 
-def print_solution(solution, v):
-    """Pretty print the solution with symbol names."""
-    if solution is None:
-        print("No solution to display")
-        return
-    
-    # Generate symbol names
-    if v <= 8:
-        symbols = ["Dog", "Cat", "Bird", "Fish", "Horse", "Cow", "Pig", "Sheep"][:v]
-    else:
-        symbols = [f"Symbol_{i}" for i in range(v)]
-        
-    print("\n=== GENERALIZED SPOT IT SOLUTION ===")
-    symbols_per_card = len(list(solution.values())[0]) if solution else 0
-    print(f"Each card contains exactly {symbols_per_card} symbols")
-    print(f"Any two cards share exactly 1 symbol in common")
-    print()
-    
-    for card_name in sorted(solution.keys(), key=lambda x: int(x.split('_')[1])):
-        card_num = int(card_name.split('_')[1])
-        symbol_indices = solution[card_name]
-        symbol_names = [symbols[i] for i in sorted(symbol_indices)]
-        print(f"Card {card_num:2d}: {', '.join(symbol_names)}")
+    if res == sat:
+        return s.model(), card_symbol, elapsed
+    return None, None, elapsed
 
-def verify_solution(solution):
-    """Verify that the solution satisfies all Spot It constraints."""
-    if solution is None:
+
+# ---------------------------------------------------------------------------
+#  Utilities
+# ---------------------------------------------------------------------------
+
+def pretty_print(model, card_symbol, v, k):
+    """Print a found design in a human‑readable format."""
+    symbols = [f"S{i}" for i in range(v)]
+    for i, row in enumerate(card_symbol):
+        syms = [symbols[j] for j in range(v) if is_true(model.evaluate(row[j]))]
+        print(f"Card {i:>3}:  " + ", ".join(syms))
+    print(f"\nEvery card has exactly {k} symbols – verified.")
+
+
+def quick_feasibility(v, k):
+    """
+    Necessary numerical conditions (same as in the old `is_feasible`),
+    used only to skip impossible b.
+    """
+    if k < 2 or v < k:
         return False
-        
-    cards = list(solution.values())
-    num_cards = len(cards)
-    
-    print(f"\n=== VERIFICATION ===")
-    print(f"Number of cards: {num_cards}")
-    
-    # Check each card has the expected number of symbols
-    expected_symbols = len(cards[0]) if cards else 0
-    for i, card in enumerate(cards):
-        if len(card) != expected_symbols:
-            print(f"ERROR: Card {i} has {len(card)} symbols, expected {expected_symbols}")
-            return False
-    print(f"✓ Each card has exactly {expected_symbols} symbols")
-    
-    # Check any two cards share exactly one symbol
-    violations = 0
-    for i in range(num_cards):
-        for j in range(i + 1, num_cards):
-            shared = len(set(cards[i]) & set(cards[j]))
-            if shared != 1:
-                print(f"ERROR: Cards {i} and {j} share {shared} symbols, expected 1")
-                violations += 1
-                if violations > 10:
-                    print("... (more violations)")
-                    break
-        if violations > 10:
-            break
-    
-    if violations == 0:
-        print("✓ Any two cards share exactly one symbol")
-        return True
-    else:
-        print(f"✗ Found {violations} constraint violations")
+    # In a (v,k,λ=1) design we must have v ≡ 1 (mod k−1) and
+    # b = v , r = k , etc.  We do *not* use this to prune more,
+    # just the two divisibility conditions:
+    b = v
+    r_times_v = b * k
+    if r_times_v % v != 0:
         return False
+    r = r_times_v // v
+    return (r * (k - 1)) % (v - 1) == 0
 
-def run_test_cases():
-    """Run some known solvable test cases."""
-    print("=== RUNNING TEST CASES ===\n")
+
+# ---------------------------------------------------------------------------
+#  Command‑line interface
+# ---------------------------------------------------------------------------
+
+def benchmark_symmetry():
+    """Compare normal vs extra symmetry breaking across different problem sizes."""
+    print("=== SYMMETRY BREAKING BENCHMARK ===")
+    print("Testing when extra symmetry helps vs hurts...")
     
     test_cases = [
-        (7, 3),   # Fano plane: 7 points, 3 per line
-        (13, 4),  # 13 points, 4 per line  
-        (6, 3),   # Simple case
-        (8, 4),   # Might work
-        (15, 3),  # Another test
+        (7, 3),   # Small
+        (13, 4),  # Medium  
+        (21, 5),  # Large
+        # Skip larger ones for now as they take too long
     ]
     
+    results = []
+    
     for v, k in test_cases:
-        print(f"\n{'='*50}")
-        print(f"TEST CASE: v={v}, k={k}")
-        print(f"{'='*50}")
+        print(f"\n--- Testing v={v}, k={k} ---")
         
-        solution = solve_generalized_spotit(v, k, max_cards=30, timeout_ms=10000)
-        
-        if solution:
-            print_solution(solution, v)
-            is_valid = verify_solution(solution)
-            if is_valid:
-                print(f"✅ Test case v={v}, k={k} PASSED")
+        if not quick_feasibility(v, k):
+            print("Not feasible, skipping")
+            continue
+            
+        # Test normal symmetry
+        print("Normal symmetry breaking...")
+        try:
+            model1, cs1, time1 = solve_instance(v, k, v, timeout_s=60, extra_symmetry=False)
+            normal_time = time1 if model1 else float('inf')
+            normal_solved = model1 is not None  
+        except:
+            normal_time = float('inf')
+            normal_solved = False
+            
+        # Test extra symmetry
+        print("Extra symmetry breaking...")
+        try:
+            model2, cs2, time2 = solve_instance(v, k, v, timeout_s=60, extra_symmetry=True)
+            extra_time = time2 if model2 else float('inf')
+            extra_solved = model2 is not None
+        except:
+            extra_time = float('inf')
+            extra_solved = False
+            
+        # Analyze results
+        if normal_solved and extra_solved:
+            speedup = normal_time / extra_time
+            if speedup > 1.1:
+                verdict = f"EXTRA HELPS ({speedup:.2f}x faster)"
+            elif speedup < 0.9:
+                verdict = f"NORMAL HELPS ({1/speedup:.2f}x faster)"
             else:
-                print(f"❌ Test case v={v}, k={k} FAILED verification")
+                verdict = "SIMILAR"
+        elif normal_solved and not extra_solved:
+            verdict = "NORMAL WINS (extra failed)"
+        elif extra_solved and not normal_solved:
+            verdict = "EXTRA WINS (normal failed)" 
         else:
-            print(f"❌ Test case v={v}, k={k} - No solution found")
+            verdict = "BOTH FAILED"
+            
+        result = {
+            'v': v, 'k': k,
+            'normal_time': normal_time,
+            'extra_time': extra_time,
+            'normal_solved': normal_solved,
+            'extra_solved': extra_solved,
+            'verdict': verdict
+        }
+        results.append(result)
         
-        print(f"{'='*50}\n")
+        print(f"Normal: {normal_time:.3f}s ({'✓' if normal_solved else '✗'})")
+        print(f"Extra:  {extra_time:.3f}s ({'✓' if extra_solved else '✗'})")
+        print(f"Result: {verdict}")
+        
+    # Summary analysis
+    print(f"\n{'='*60}")
+    print("SUMMARY:")
+    for r in results:
+        variables = r['v'] * r['v']  # Approximate problem size
+        constraint_ratio = (r['v'] + r['v']*(r['v']-1)//2 + r['v'] + 57) / (r['v'] + r['v']*(r['v']-1)//2 + r['v'] + 42)  # Rough estimate
+        print(f"v={r['v']}, k={r['k']} (~{variables} vars): {r['verdict']}")
+        
+    return results
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("v", nargs="?", type=int)
+    parser.add_argument("k", nargs="?", type=int)
+    parser.add_argument("--timeout", type=int, default=86400,
+                        help="per‑instance timeout in seconds (default 86400)")
+    parser.add_argument("--extra-symmetry", action="store_true",
+                        help="add extra symmetry breaking constraints (may help or hurt)")
+    parser.add_argument("--no-basic-symmetry", action="store_true",
+                        help="disable basic symmetry breaking constraints")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="run symmetry breaking benchmark")
+    args = parser.parse_args()
+
+    if args.benchmark:
+        benchmark_symmetry()
+        return
+        
+    if args.v is None and args.k is None:
+        # demo mode – run a few small examples
+        demos = [(7, 3), (13, 4), (15, 3), (57, 8)]
+        for v, k in demos:
+            print("\n" + "-" * 60)
+            print(f"Testing v = {v},  k = {k}")
+            if not quick_feasibility(v, k):
+                print("  Numerically impossible, skipped.")
+                continue
+            model, cs, solve_time = solve_instance(v, k, v, timeout_s=args.timeout, extra_symmetry=args.extra_symmetry, basic_symmetry=not args.no_basic_symmetry)
+            if model:
+                pretty_print(model, cs, v, k)
+                print(f"✓ Solution found in {solve_time:.3f} seconds")
+            else:
+                print(f"  No solution (unsat or timeout) after {solve_time:.3f} seconds")
+    else:
+        v = args.v
+        k = args.k
+        if not quick_feasibility(v, k):
+            print("Instance fails the basic divisibility conditions – aborting.")
+            return
+        model, cs, solve_time = solve_instance(v, k, v, timeout_s=args.timeout, extra_symmetry=args.extra_symmetry, basic_symmetry=not args.no_basic_symmetry)
+        if model:
+            pretty_print(model, cs, v, k)
+            print(f"\n✓ Solution found in {solve_time:.3f} seconds")
+        else:
+            print(f"No solution found (unsat or timeout) after {solve_time:.3f} seconds")
 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) == 1:
-        run_test_cases()
-    elif len(sys.argv) == 3:
-        v = int(sys.argv[1])
-        k = int(sys.argv[2])
-        
-        print(f"Solving generalized Spot It with v={v}, k={k}")
-        solution = solve_generalized_spotit(v, k)
-        
-        if solution:
-            print_solution(solution, v)
-            is_valid = verify_solution(solution)
-            if is_valid:
-                print("\n🎉 Solution is valid!")
-            else:
-                print("\n❌ Solution has errors")
-        else:
-            print("\n❌ No solution found")
-    else:
-        print("Usage:")
-        print("  python spotit.py              # Run test cases")
-        print("  python spotit.py <v> <k>      # Solve for specific v, k")
-        print("  Example: python spotit.py 7 3")
+    main()

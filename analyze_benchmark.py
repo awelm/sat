@@ -442,9 +442,12 @@ def markdown_table(rows: List[Dict[str, object]], headers: List[str]) -> List[st
 
 
 def markdown_image_reference(markdown_path: Path, image_path: Path) -> str:
-    return Path(
+    reference = Path(
         os.path.relpath(image_path.resolve(), markdown_path.parent.resolve())
     ).as_posix()
+    if not reference.startswith("."):
+        reference = f"./{reference}"
+    return reference
 
 
 def write_markdown(

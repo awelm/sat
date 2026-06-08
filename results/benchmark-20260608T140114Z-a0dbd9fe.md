@@ -8,7 +8,7 @@
 - Summary CSV: `results/data/benchmark-20260608T140114Z-a0dbd9fe-summary.csv`
 - Comparison CSV: `results/data/benchmark-20260608T140114Z-a0dbd9fe-comparisons.csv`
 
-![SMT vs DP benchmark chart](data/benchmark-20260608T140114Z-a0dbd9fe.png)
+![SMT vs DP benchmark chart](./data/benchmark-20260608T140114Z-a0dbd9fe.png)
 
 ## Parameters
 

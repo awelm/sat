@@ -65,5 +65,6 @@ benchmark:
 		--param "smt_timeout_ms=$(SMT_TIMEOUT_MS)" \
 		--bootstrap-samples $(BOOTSTRAP_SAMPLES) \
 		--min-pairs $(MIN_PAIRS)
-	@ln -sfn "benchmark-$(RUN_ID).md" "$(RESULTS_DIR)/benchmark-latest.md"
+	@rm -f "$(RESULTS_DIR)/benchmark-latest.md"
+	@cp "$(BENCHMARK_PREFIX).md" "$(RESULTS_DIR)/benchmark-latest.md"
 	@echo "Wrote benchmark report $(BENCHMARK_PREFIX).md"

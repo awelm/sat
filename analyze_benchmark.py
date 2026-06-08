@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import platform
 import random
 import statistics
@@ -440,6 +441,12 @@ def markdown_table(rows: List[Dict[str, object]], headers: List[str]) -> List[st
     return lines
 
 
+def markdown_image_reference(markdown_path: Path, image_path: Path) -> str:
+    return Path(
+        os.path.relpath(image_path.resolve(), markdown_path.parent.resolve())
+    ).as_posix()
+
+
 def write_markdown(
     path: Path,
     chart_path: Path,
@@ -455,10 +462,7 @@ def write_markdown(
     environment: Dict[str, str],
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        chart_reference = chart_path.resolve().relative_to(path.parent.resolve()).as_posix()
-    except ValueError:
-        chart_reference = chart_path.resolve().as_posix()
+    chart_reference = markdown_image_reference(path, chart_path)
     lines = [
         "# TSP Benchmark Run",
         "",

@@ -10,6 +10,7 @@ BENCHMARK_MAX_SIZE ?= 30
 BENCHMARK_ITERATIONS ?= 30
 BENCHMARK_SEED ?= 2
 SMT_WORKERS ?= 8
+DP_WORKERS ?= $(SMT_WORKERS)
 OVERLAP_DP_WITH_SMT ?= false
 DP_MAX_SIZE ?= 0
 STOP_DP_AFTER_TIMEOUT ?= true
@@ -52,6 +53,7 @@ benchmark:
 		--smt-strategies $(SMT_STRATEGIES) \
 		--smt-objectives $(SMT_OBJECTIVES) \
 		--smt-timeout-ms $(SMT_TIMEOUT_MS) \
+		--dp-workers $(DP_WORKERS) \
 		--smt-workers $(SMT_WORKERS) \
 		--$(if $(filter true,$(OVERLAP_DP_WITH_SMT)),overlap-dp-with-smt,no-overlap-dp-with-smt) \
 		--no-plot \
@@ -63,12 +65,13 @@ benchmark:
 		--plot "$(BENCHMARK_DATA_PREFIX).png" \
 		--markdown "$(BENCHMARK_PREFIX).md" \
 		--run-id "$(RUN_ID)" \
-		--cli-invocation '$(PYTHON) benchmark.py --min-size $(BENCHMARK_MIN_SIZE) --max-size $(BENCHMARK_MAX_SIZE) --iterations $(BENCHMARK_ITERATIONS) --seed $(BENCHMARK_SEED) --dp-max-size $(DP_MAX_SIZE) --$(if $(filter true,$(STOP_DP_AFTER_TIMEOUT)),stop-dp-after-timeout,no-stop-dp-after-timeout) --global-timeout-seconds $(GLOBAL_TIMEOUT_SECONDS) --problem-timeout-seconds $(PROBLEM_TIMEOUT_SECONDS) --smt-strategies $(SMT_STRATEGIES) --smt-objectives $(SMT_OBJECTIVES) --smt-timeout-ms $(SMT_TIMEOUT_MS) --smt-workers $(SMT_WORKERS) --$(if $(filter true,$(OVERLAP_DP_WITH_SMT)),overlap-dp-with-smt,no-overlap-dp-with-smt) --no-plot --csv $(BENCHMARK_DATA_PREFIX).csv' \
+		--cli-invocation '$(PYTHON) benchmark.py --min-size $(BENCHMARK_MIN_SIZE) --max-size $(BENCHMARK_MAX_SIZE) --iterations $(BENCHMARK_ITERATIONS) --seed $(BENCHMARK_SEED) --dp-max-size $(DP_MAX_SIZE) --$(if $(filter true,$(STOP_DP_AFTER_TIMEOUT)),stop-dp-after-timeout,no-stop-dp-after-timeout) --global-timeout-seconds $(GLOBAL_TIMEOUT_SECONDS) --problem-timeout-seconds $(PROBLEM_TIMEOUT_SECONDS) --smt-strategies $(SMT_STRATEGIES) --smt-objectives $(SMT_OBJECTIVES) --smt-timeout-ms $(SMT_TIMEOUT_MS) --dp-workers $(DP_WORKERS) --smt-workers $(SMT_WORKERS) --$(if $(filter true,$(OVERLAP_DP_WITH_SMT)),overlap-dp-with-smt,no-overlap-dp-with-smt) --no-plot --csv $(BENCHMARK_DATA_PREFIX).csv' \
 		--param "target=benchmark" \
 		--param "min_size=$(BENCHMARK_MIN_SIZE)" \
 		--param "max_size=$(BENCHMARK_MAX_SIZE)" \
 		--param "iterations=$(BENCHMARK_ITERATIONS)" \
 		--param "seed=$(BENCHMARK_SEED)" \
+		--param "dp_workers=$(DP_WORKERS)" \
 		--param "smt_workers=$(SMT_WORKERS)" \
 		--param "overlap_dp_with_smt=$(OVERLAP_DP_WITH_SMT)" \
 		--param "dp_max_size=$(DP_MAX_SIZE)" \

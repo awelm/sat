@@ -7,7 +7,7 @@ import random
 import signal
 import statistics
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -36,6 +36,9 @@ class SolverTimedOut(Exception):
     def __init__(self, elapsed_seconds: float) -> None:
         super().__init__("solver exceeded its wall-clock timeout")
         self.elapsed_seconds = elapsed_seconds
+
+
+TIMEOUT_STATUSES = {"timeout", "problem_timeout", "global_timeout"}
 
 
 def time_solver(
@@ -374,6 +377,60 @@ def smt_attempt_row(
     }
 
 
+def dp_attempt_row(
+    size: int,
+    iteration: int,
+    instance_seed: int,
+    symmetric: bool,
+    problem_timeout_seconds: float,
+) -> Dict[str, object]:
+    distances = build_distances(size, random.Random(instance_seed), symmetric)
+    effective_timeout_seconds = attempt_timeout_seconds(None, problem_timeout_seconds)
+    try:
+        elapsed_seconds, result = time_solver(
+            lambda: dp(distances),
+            timeout_seconds=effective_timeout_seconds,
+        )
+    except SolverTimedOut as error:
+        return {
+            **empty_row(
+                "dp",
+                size,
+                iteration,
+                instance_seed,
+                symmetric,
+                timeout_status_for_attempt(
+                    None,
+                    effective_timeout_seconds,
+                    problem_timeout_seconds,
+                ),
+            ),
+            "time_seconds": error.elapsed_seconds,
+        }
+
+    cost, path = result
+    assert_valid_tour(path, size, "dp()")
+    if tour_cost(distances, path) != cost:
+        raise AssertionError("dp() returned a tour whose cost does not match")
+    return {
+        "solver": "dp",
+        "size": size,
+        "iteration": iteration,
+        "instance_seed": instance_seed,
+        "symmetric": symmetric,
+        "status": "ok",
+        "time_seconds": elapsed_seconds,
+        "cost": cost,
+        "check_count": "",
+        "subtour_cut_count": "",
+        "subtour_iterations": "",
+        "strategy": "",
+        "uses_order_constraints": "",
+        "objective": "",
+        "path": json.dumps(path),
+    }
+
+
 def benchmark_instances(args: argparse.Namespace) -> List[Tuple[int, int, int]]:
     return [
         (size, iteration, build_instance_seed(args.seed, size, iteration))
@@ -469,6 +526,122 @@ def run_dp_rows_until_timeout(
                 "path": json.dumps(path),
             }
         )
+    return rows
+
+
+def run_dp_rows_parallel_until_timeout(
+    args: argparse.Namespace,
+    instances: Sequence[Tuple[int, int, int]],
+) -> List[Dict[str, object]]:
+    if args.dp_workers <= 1:
+        return run_dp_rows_until_timeout(args, instances)
+
+    rows: List[Dict[str, object]] = []
+    instances_by_size: Dict[int, List[Tuple[int, int, int]]] = {}
+    for size, iteration, instance_seed in instances:
+        instances_by_size.setdefault(size, []).append((size, iteration, instance_seed))
+
+    stopped_after_timeout = False
+    for size in sorted(instances_by_size):
+        size_instances = instances_by_size[size]
+        if stopped_after_timeout:
+            for _, iteration, instance_seed in size_instances:
+                rows.append(
+                    empty_row(
+                        "dp",
+                        size,
+                        iteration,
+                        instance_seed,
+                        args.symmetric,
+                        "skipped_after_timeout",
+                    )
+                )
+            continue
+
+        if args.dp_max_size > 0 and size > args.dp_max_size:
+            for _, iteration, instance_seed in size_instances:
+                rows.append(
+                    empty_row(
+                        "dp",
+                        size,
+                        iteration,
+                        instance_seed,
+                        args.symmetric,
+                        "skipped_dp_max_size",
+                    )
+                )
+            continue
+
+        executor = ProcessPoolExecutor(max_workers=args.dp_workers)
+        futures_by_instance = {}
+        next_instance_index = 0
+
+        def submit_next_instance() -> None:
+            nonlocal next_instance_index
+            if next_instance_index >= len(size_instances):
+                return
+            size, iteration, instance_seed = size_instances[next_instance_index]
+            next_instance_index += 1
+            future = executor.submit(
+                dp_attempt_row,
+                size,
+                iteration,
+                instance_seed,
+                args.symmetric,
+                args.problem_timeout_seconds,
+            )
+            futures_by_instance[future] = (size, iteration, instance_seed)
+
+        for _ in range(min(args.dp_workers, len(size_instances))):
+            submit_next_instance()
+
+        stop_this_size = False
+        try:
+            while futures_by_instance:
+                future = next(as_completed(list(futures_by_instance)))
+                futures_by_instance.pop(future)
+                row = future.result()
+                rows.append(row)
+                if args.stop_dp_after_timeout and str(row["status"]) in TIMEOUT_STATUSES:
+                    stopped_after_timeout = True
+                    stop_this_size = True
+                    break
+                submit_next_instance()
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+        if not stop_this_size:
+            continue
+
+        for future, (_, iteration, instance_seed) in futures_by_instance.items():
+            if future.done() and not future.cancelled():
+                try:
+                    rows.append(future.result())
+                    continue
+                except CancelledError:
+                    pass
+            rows.append(
+                empty_row(
+                    "dp",
+                    size,
+                    iteration,
+                    instance_seed,
+                    args.symmetric,
+                    "skipped_after_timeout",
+                )
+            )
+        for _, iteration, instance_seed in size_instances[next_instance_index:]:
+            rows.append(
+                empty_row(
+                    "dp",
+                    size,
+                    iteration,
+                    instance_seed,
+                    args.symmetric,
+                    "skipped_after_timeout",
+                )
+            )
+
     return rows
 
 
@@ -586,14 +759,14 @@ def run_parallel_benchmark(
     smt_labels: Sequence[str],
 ) -> None:
     if args.global_timeout_seconds > 0:
-        raise ValueError("--smt-workers > 1 requires --global-timeout-seconds 0")
+        raise ValueError("parallel workers require --global-timeout-seconds 0")
 
     instances = benchmark_instances(args)
     required_orders = {args.required_city: args.required_day}
     rows: List[Dict[str, object]] = []
 
     if args.dp and not args.overlap_dp_with_smt:
-        rows.extend(run_dp_rows_until_timeout(args, instances))
+        rows.extend(run_dp_rows_parallel_until_timeout(args, instances))
 
     with ProcessPoolExecutor(max_workers=args.smt_workers) as executor:
         futures = []
@@ -641,7 +814,7 @@ def run_parallel_benchmark(
                         )
 
         if args.dp and args.overlap_dp_with_smt:
-            rows.extend(run_dp_rows_until_timeout(args, instances))
+            rows.extend(run_dp_rows_parallel_until_timeout(args, instances))
 
         for future in as_completed(futures):
             rows.append(future.result())
@@ -677,6 +850,7 @@ def main() -> None:
     parser.add_argument("--smt-objectives", default="auto")
     parser.add_argument("--smt-strategies", default="lazy")
     parser.add_argument("--smt-timeout-ms", type=int, default=0)
+    parser.add_argument("--dp-workers", type=int, default=1)
     parser.add_argument("--smt-workers", type=int, default=1)
     parser.add_argument(
         "--overlap-dp-with-smt",
@@ -694,10 +868,15 @@ def main() -> None:
     parser.add_argument("--no-plot", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    if args.dp_workers < 1:
+        parser.error("--dp-workers must be at least 1")
     if args.smt_workers < 1:
         parser.error("--smt-workers must be at least 1")
-    if args.smt_workers > 1 and args.global_timeout_seconds > 0:
-        parser.error("--smt-workers > 1 requires --global-timeout-seconds 0")
+    if (
+        (args.dp_workers > 1 or args.smt_workers > 1)
+        and args.global_timeout_seconds > 0
+    ):
+        parser.error("parallel workers require --global-timeout-seconds 0")
 
     smt_objectives = parse_list(args.smt_objectives)
     smt_strategies = parse_list(args.smt_strategies)
@@ -706,7 +885,7 @@ def main() -> None:
         for strategy in smt_strategies
         for objective in smt_objectives
     ]
-    if args.smt_workers > 1:
+    if args.dp_workers > 1 or args.smt_workers > 1:
         run_parallel_benchmark(args, smt_strategies, smt_objectives, smt_labels)
         return
     smt_times_by_label: Dict[str, Dict[int, List[float]]] = {

@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import multiprocessing
 import random
 import signal
 import statistics
 import time
-from concurrent.futures import CancelledError, ProcessPoolExecutor, as_completed
+import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from queue import Empty
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from dp import dp
@@ -431,6 +434,121 @@ def dp_attempt_row(
     }
 
 
+def dp_attempt_process(
+    result_queue: multiprocessing.Queue,
+    size: int,
+    iteration: int,
+    instance_seed: int,
+    symmetric: bool,
+    problem_timeout_seconds: float,
+) -> None:
+    try:
+        result_queue.put(
+            (
+                "row",
+                dp_attempt_row(
+                    size,
+                    iteration,
+                    instance_seed,
+                    symmetric,
+                    problem_timeout_seconds,
+                ),
+            )
+        )
+    except BaseException:
+        result_queue.put(("error", traceback.format_exc()))
+
+
+def terminate_process(process: multiprocessing.Process) -> None:
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=1)
+    if process.is_alive():
+        process.kill()
+    process.join()
+
+
+def close_queue(queue: multiprocessing.Queue) -> None:
+    queue.close()
+    queue.join_thread()
+
+
+def dp_problem_timeout_row(
+    size: int,
+    iteration: int,
+    instance_seed: int,
+    symmetric: bool,
+    elapsed_seconds: float,
+    problem_timeout_seconds: float,
+) -> Dict[str, object]:
+    effective_timeout_seconds = attempt_timeout_seconds(None, problem_timeout_seconds)
+    return {
+        **empty_row(
+            "dp",
+            size,
+            iteration,
+            instance_seed,
+            symmetric,
+            timeout_status_for_attempt(
+                None,
+                effective_timeout_seconds,
+                problem_timeout_seconds,
+            ),
+        ),
+        "time_seconds": elapsed_seconds,
+    }
+
+
+def dp_skipped_after_timeout_row(
+    size: int,
+    iteration: int,
+    instance_seed: int,
+    symmetric: bool,
+) -> Dict[str, object]:
+    return empty_row(
+        "dp",
+        size,
+        iteration,
+        instance_seed,
+        symmetric,
+        "skipped_after_timeout",
+    )
+
+
+def cleanup_dp_attempts(active_attempts: Iterable[Dict[str, object]]) -> None:
+    for attempt in list(active_attempts):
+        process = attempt["process"]
+        terminate_process(process)
+        result_queue = attempt["queue"]
+        close_queue(result_queue)
+
+
+def read_dp_attempt_result(
+    result_queue: multiprocessing.Queue,
+    process: multiprocessing.Process,
+    size: int,
+    iteration: int,
+) -> Dict[str, object]:
+    if process.exitcode not in (0, None):
+        raise RuntimeError(
+            f"dp worker exited unexpectedly for size={size} iteration={iteration} "
+            f"with exit code {process.exitcode}"
+        )
+    try:
+        kind, payload = result_queue.get_nowait()
+    except Empty as error:
+        raise RuntimeError(
+            f"dp worker produced no result for size={size} iteration={iteration}"
+        ) from error
+    if kind == "error":
+        raise RuntimeError(
+            f"dp worker failed for size={size} iteration={iteration}\n{payload}"
+        )
+    if kind != "row":
+        raise RuntimeError(f"dp worker produced an unknown result kind: {kind}")
+    return payload
+
+
 def benchmark_instances(args: argparse.Namespace) -> List[Tuple[int, int, int]]:
     return [
         (size, iteration, build_instance_seed(args.seed, size, iteration))
@@ -572,73 +690,153 @@ def run_dp_rows_parallel_until_timeout(
                 )
             continue
 
-        executor = ProcessPoolExecutor(max_workers=args.dp_workers)
-        futures_by_instance = {}
+        context = multiprocessing.get_context("spawn")
+        active_attempts: List[Dict[str, object]] = []
         next_instance_index = 0
 
-        def submit_next_instance() -> None:
+        def submit_next_instance() -> bool:
             nonlocal next_instance_index
             if next_instance_index >= len(size_instances):
-                return
+                return False
             size, iteration, instance_seed = size_instances[next_instance_index]
             next_instance_index += 1
-            future = executor.submit(
-                dp_attempt_row,
-                size,
-                iteration,
-                instance_seed,
-                args.symmetric,
-                args.problem_timeout_seconds,
+            result_queue = context.Queue(maxsize=1)
+            process = context.Process(
+                target=dp_attempt_process,
+                args=(
+                    result_queue,
+                    size,
+                    iteration,
+                    instance_seed,
+                    args.symmetric,
+                    args.problem_timeout_seconds,
+                ),
             )
-            futures_by_instance[future] = (size, iteration, instance_seed)
+            process.start()
+            active_attempts.append(
+                {
+                    "process": process,
+                    "queue": result_queue,
+                    "size": size,
+                    "iteration": iteration,
+                    "instance_seed": instance_seed,
+                    "started_at": time.perf_counter(),
+                }
+            )
+            return True
 
         for _ in range(min(args.dp_workers, len(size_instances))):
             submit_next_instance()
 
         stop_this_size = False
         try:
-            while futures_by_instance:
-                future = next(as_completed(list(futures_by_instance)))
-                futures_by_instance.pop(future)
-                row = future.result()
-                rows.append(row)
-                if args.stop_dp_after_timeout and str(row["status"]) in TIMEOUT_STATUSES:
-                    stopped_after_timeout = True
-                    stop_this_size = True
+            while active_attempts:
+                now = time.perf_counter()
+                timed_out_attempt = None
+                if args.problem_timeout_seconds > 0:
+                    for attempt in active_attempts:
+                        elapsed_seconds = now - float(attempt["started_at"])
+                        if elapsed_seconds >= args.problem_timeout_seconds:
+                            timed_out_attempt = attempt
+                            break
+
+                if timed_out_attempt is not None:
+                    active_attempts.remove(timed_out_attempt)
+                    process = timed_out_attempt["process"]
+                    terminate_process(process)
+                    result_queue = timed_out_attempt["queue"]
+                    close_queue(result_queue)
+                    rows.append(
+                        dp_problem_timeout_row(
+                            int(timed_out_attempt["size"]),
+                            int(timed_out_attempt["iteration"]),
+                            int(timed_out_attempt["instance_seed"]),
+                            args.symmetric,
+                            now - float(timed_out_attempt["started_at"]),
+                            args.problem_timeout_seconds,
+                        )
+                    )
+                    if args.stop_dp_after_timeout:
+                        stopped_after_timeout = True
+                        stop_this_size = True
+                        for attempt in active_attempts:
+                            process = attempt["process"]
+                            terminate_process(process)
+                            result_queue = attempt["queue"]
+                            close_queue(result_queue)
+                            rows.append(
+                                dp_skipped_after_timeout_row(
+                                    int(attempt["size"]),
+                                    int(attempt["iteration"]),
+                                    int(attempt["instance_seed"]),
+                                    args.symmetric,
+                                )
+                            )
+                        active_attempts.clear()
+                        break
+                    submit_next_instance()
+                    continue
+
+                completed_attempts = [
+                    attempt
+                    for attempt in active_attempts
+                    if not attempt["process"].is_alive()
+                ]
+                if not completed_attempts:
+                    time.sleep(0.05)
+                    continue
+
+                for attempt in completed_attempts:
+                    if attempt not in active_attempts:
+                        continue
+                    active_attempts.remove(attempt)
+                    process = attempt["process"]
+                    process.join()
+                    result_queue = attempt["queue"]
+                    try:
+                        row = read_dp_attempt_result(
+                            result_queue,
+                            process,
+                            int(attempt["size"]),
+                            int(attempt["iteration"]),
+                        )
+                    finally:
+                        close_queue(result_queue)
+                    rows.append(row)
+                    if args.stop_dp_after_timeout and str(row["status"]) in TIMEOUT_STATUSES:
+                        stopped_after_timeout = True
+                        stop_this_size = True
+                        for other_attempt in active_attempts:
+                            other_process = other_attempt["process"]
+                            terminate_process(other_process)
+                            other_queue = other_attempt["queue"]
+                            close_queue(other_queue)
+                            rows.append(
+                                dp_skipped_after_timeout_row(
+                                    int(other_attempt["size"]),
+                                    int(other_attempt["iteration"]),
+                                    int(other_attempt["instance_seed"]),
+                                    args.symmetric,
+                                )
+                            )
+                        active_attempts.clear()
+                        break
+                    submit_next_instance()
+
+                if stop_this_size:
                     break
-                submit_next_instance()
-        finally:
-            executor.shutdown(wait=True, cancel_futures=True)
+        except BaseException:
+            cleanup_dp_attempts(active_attempts)
+            active_attempts.clear()
+            raise
 
         if not stop_this_size:
             continue
 
-        for future, (_, iteration, instance_seed) in futures_by_instance.items():
-            if future.done() and not future.cancelled():
-                try:
-                    rows.append(future.result())
-                    continue
-                except CancelledError:
-                    pass
-            rows.append(
-                empty_row(
-                    "dp",
-                    size,
-                    iteration,
-                    instance_seed,
-                    args.symmetric,
-                    "skipped_after_timeout",
-                )
-            )
         for _, iteration, instance_seed in size_instances[next_instance_index:]:
             rows.append(
-                empty_row(
-                    "dp",
-                    size,
-                    iteration,
-                    instance_seed,
-                    args.symmetric,
-                    "skipped_after_timeout",
+                dp_skipped_after_timeout_row(
+                    size, iteration, instance_seed, args.symmetric
                 )
             )
 

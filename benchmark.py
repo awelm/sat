@@ -7,9 +7,9 @@ import multiprocessing
 import random
 import signal
 import statistics
+import threading
 import time
 import traceback
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from queue import Empty
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -264,6 +264,15 @@ def empty_row(
     }
 
 
+def solver_name_for_smt_attempt(
+    strategy: str,
+    objective: str,
+    modified: bool,
+) -> str:
+    solver_prefix = "smt-modified" if modified else "smt"
+    return f"{solver_prefix}:{strategy}:{objective}"
+
+
 def smt_attempt_row(
     size: int,
     iteration: int,
@@ -279,8 +288,7 @@ def smt_attempt_row(
 ) -> Dict[str, object]:
     distances = build_distances(size, random.Random(instance_seed), symmetric=symmetric)
     stats = SmtStats()
-    solver_prefix = "smt-modified" if modified else "smt"
-    solver_name = f"{solver_prefix}:{strategy}:{objective}"
+    solver_name = solver_name_for_smt_attempt(strategy, objective, modified)
     effective_timeout_seconds = attempt_timeout_seconds(None, problem_timeout_seconds)
 
     try:
@@ -380,6 +388,43 @@ def smt_attempt_row(
     }
 
 
+def smt_attempt_process(
+    result_queue: multiprocessing.Queue,
+    size: int,
+    iteration: int,
+    instance_seed: int,
+    symmetric: bool,
+    strategy: str,
+    objective: str,
+    required_orders: Optional[Dict[int, int]],
+    problem_timeout_seconds: float,
+    smt_timeout_ms: int,
+    allow_smt_failures: bool,
+    modified: bool,
+) -> None:
+    try:
+        result_queue.put(
+            (
+                "row",
+                smt_attempt_row(
+                    size,
+                    iteration,
+                    instance_seed,
+                    symmetric,
+                    strategy,
+                    objective,
+                    required_orders,
+                    problem_timeout_seconds,
+                    smt_timeout_ms,
+                    allow_smt_failures,
+                    modified,
+                ),
+            )
+        )
+    except BaseException:
+        result_queue.put(("error", traceback.format_exc()))
+
+
 def dp_attempt_row(
     size: int,
     iteration: int,
@@ -473,6 +518,39 @@ def close_queue(queue: multiprocessing.Queue) -> None:
     queue.join_thread()
 
 
+def smt_problem_timeout_row(
+    size: int,
+    iteration: int,
+    instance_seed: int,
+    symmetric: bool,
+    strategy: str,
+    objective: str,
+    required_orders: Optional[Dict[int, int]],
+    modified: bool,
+    elapsed_seconds: float,
+    problem_timeout_seconds: float,
+) -> Dict[str, object]:
+    effective_timeout_seconds = attempt_timeout_seconds(None, problem_timeout_seconds)
+    return {
+        **empty_row(
+            solver_name_for_smt_attempt(strategy, objective, modified),
+            size,
+            iteration,
+            instance_seed,
+            symmetric,
+            timeout_status_for_attempt(
+                None,
+                effective_timeout_seconds,
+                problem_timeout_seconds,
+            ),
+            strategy=strategy,
+            objective=objective,
+        ),
+        "time_seconds": elapsed_seconds,
+        "uses_order_constraints": bool(required_orders),
+    }
+
+
 def dp_problem_timeout_row(
     size: int,
     iteration: int,
@@ -535,12 +613,39 @@ def dp_skipped_after_timeout_row(
     )
 
 
-def cleanup_dp_attempts(active_attempts: Iterable[Dict[str, object]]) -> None:
+def cleanup_child_attempts(active_attempts: Iterable[Dict[str, object]]) -> None:
     for attempt in list(active_attempts):
         process = attempt["process"]
         terminate_process(process)
         result_queue = attempt["queue"]
         close_queue(result_queue)
+
+
+def read_child_attempt_result(
+    result_queue: multiprocessing.Queue,
+    process: multiprocessing.Process,
+    solver: str,
+    size: int,
+    iteration: int,
+) -> Dict[str, object]:
+    if process.exitcode not in (0, None):
+        raise RuntimeError(
+            f"{solver} worker exited unexpectedly for size={size} iteration={iteration} "
+            f"with exit code {process.exitcode}"
+        )
+    try:
+        kind, payload = result_queue.get_nowait()
+    except Empty as error:
+        raise RuntimeError(
+            f"{solver} worker produced no result for size={size} iteration={iteration}"
+        ) from error
+    if kind == "error":
+        raise RuntimeError(
+            f"{solver} worker failed for size={size} iteration={iteration}\n{payload}"
+        )
+    if kind != "row":
+        raise RuntimeError(f"{solver} worker produced an unknown result kind: {kind}")
+    return payload
 
 
 def read_dp_attempt_result(
@@ -549,24 +654,16 @@ def read_dp_attempt_result(
     size: int,
     iteration: int,
 ) -> Dict[str, object]:
-    if process.exitcode not in (0, None):
-        raise RuntimeError(
-            f"dp worker exited unexpectedly for size={size} iteration={iteration} "
-            f"with exit code {process.exitcode}"
-        )
-    try:
-        kind, payload = result_queue.get_nowait()
-    except Empty as error:
-        raise RuntimeError(
-            f"dp worker produced no result for size={size} iteration={iteration}"
-        ) from error
-    if kind == "error":
-        raise RuntimeError(
-            f"dp worker failed for size={size} iteration={iteration}\n{payload}"
-        )
-    if kind != "row":
-        raise RuntimeError(f"dp worker produced an unknown result kind: {kind}")
-    return payload
+    return read_child_attempt_result(result_queue, process, "dp", size, iteration)
+
+
+def read_smt_attempt_result(
+    result_queue: multiprocessing.Queue,
+    process: multiprocessing.Process,
+    size: int,
+    iteration: int,
+) -> Dict[str, object]:
+    return read_child_attempt_result(result_queue, process, "smt", size, iteration)
 
 
 def benchmark_instances(args: argparse.Namespace) -> List[Tuple[int, int, int]]:
@@ -882,7 +979,7 @@ def run_dp_rows_parallel_until_timeout(
                 if stop_this_size:
                     break
         except BaseException:
-            cleanup_dp_attempts(active_attempts)
+            cleanup_child_attempts(active_attempts)
             active_attempts.clear()
             raise
 
@@ -1006,6 +1103,145 @@ def plot_rows(rows: Iterable[Dict[str, object]], smt_labels: Sequence[str]) -> N
     plt.show()
 
 
+def run_smt_rows_parallel_until_timeout(
+    args: argparse.Namespace,
+    instances: Sequence[Tuple[int, int, int]],
+    smt_strategies: Sequence[str],
+    smt_objectives: Sequence[str],
+    modified: bool,
+) -> List[Dict[str, object]]:
+    required_orders = {args.required_city: args.required_day} if modified else None
+    attempts: List[Dict[str, object]] = []
+    for size, iteration, instance_seed in instances:
+        if modified and (args.required_city >= size or args.required_day >= size):
+            continue
+        for strategy in smt_strategies:
+            for objective in smt_objectives:
+                attempts.append(
+                    {
+                        "size": size,
+                        "iteration": iteration,
+                        "instance_seed": instance_seed,
+                        "strategy": strategy,
+                        "objective": objective,
+                    }
+                )
+
+    if not attempts:
+        return []
+
+    context = multiprocessing.get_context("spawn")
+    rows: List[Dict[str, object]] = []
+    active_attempts: List[Dict[str, object]] = []
+    next_attempt_index = 0
+
+    def submit_next_attempt() -> bool:
+        nonlocal next_attempt_index
+        if next_attempt_index >= len(attempts):
+            return False
+        attempt = attempts[next_attempt_index]
+        next_attempt_index += 1
+        result_queue = context.Queue(maxsize=1)
+        process = context.Process(
+            target=smt_attempt_process,
+            args=(
+                result_queue,
+                int(attempt["size"]),
+                int(attempt["iteration"]),
+                int(attempt["instance_seed"]),
+                args.symmetric,
+                str(attempt["strategy"]),
+                str(attempt["objective"]),
+                required_orders,
+                args.problem_timeout_seconds,
+                args.smt_timeout_ms,
+                args.allow_smt_failures,
+                modified,
+            ),
+        )
+        process.start()
+        active_attempts.append(
+            {
+                **attempt,
+                "process": process,
+                "queue": result_queue,
+                "started_at": time.perf_counter(),
+            }
+        )
+        return True
+
+    for _ in range(min(args.smt_workers, len(attempts))):
+        submit_next_attempt()
+
+    try:
+        while active_attempts:
+            now = time.perf_counter()
+            timed_out_attempt = None
+            if args.problem_timeout_seconds > 0:
+                for attempt in active_attempts:
+                    elapsed_seconds = now - float(attempt["started_at"])
+                    if elapsed_seconds >= args.problem_timeout_seconds:
+                        timed_out_attempt = attempt
+                        break
+
+            if timed_out_attempt is not None:
+                active_attempts.remove(timed_out_attempt)
+                process = timed_out_attempt["process"]
+                terminate_process(process)
+                result_queue = timed_out_attempt["queue"]
+                close_queue(result_queue)
+                rows.append(
+                    smt_problem_timeout_row(
+                        int(timed_out_attempt["size"]),
+                        int(timed_out_attempt["iteration"]),
+                        int(timed_out_attempt["instance_seed"]),
+                        args.symmetric,
+                        str(timed_out_attempt["strategy"]),
+                        str(timed_out_attempt["objective"]),
+                        required_orders,
+                        modified,
+                        now - float(timed_out_attempt["started_at"]),
+                        args.problem_timeout_seconds,
+                    )
+                )
+                submit_next_attempt()
+                continue
+
+            completed_attempts = [
+                attempt
+                for attempt in active_attempts
+                if not attempt["process"].is_alive()
+            ]
+            if not completed_attempts:
+                time.sleep(0.05)
+                continue
+
+            for attempt in completed_attempts:
+                if attempt not in active_attempts:
+                    continue
+                active_attempts.remove(attempt)
+                process = attempt["process"]
+                process.join()
+                result_queue = attempt["queue"]
+                try:
+                    row = read_smt_attempt_result(
+                        result_queue,
+                        process,
+                        int(attempt["size"]),
+                        int(attempt["iteration"]),
+                    )
+                finally:
+                    close_queue(result_queue)
+                rows.append(row)
+                submit_next_attempt()
+    except BaseException:
+        cleanup_child_attempts(active_attempts)
+        active_attempts.clear()
+        raise
+
+    return rows
+
+
 def run_parallel_benchmark(
     args: argparse.Namespace,
     smt_strategies: Sequence[str],
@@ -1016,62 +1252,55 @@ def run_parallel_benchmark(
         raise ValueError("parallel workers require --global-timeout-seconds 0")
 
     instances = benchmark_instances(args)
-    required_orders = {args.required_city: args.required_day}
     rows: List[Dict[str, object]] = []
 
-    if args.dp and not args.overlap_dp_with_smt:
-        rows.extend(run_dp_rows_parallel_until_timeout(args, instances))
-
-    with ProcessPoolExecutor(max_workers=args.smt_workers) as executor:
-        futures = []
+    def collect_smt_rows() -> List[Dict[str, object]]:
+        smt_rows: List[Dict[str, object]] = []
         if args.smt:
-            for size, iteration, instance_seed in instances:
-                for strategy in smt_strategies:
-                    for objective in smt_objectives:
-                        futures.append(
-                            executor.submit(
-                                smt_attempt_row,
-                                size,
-                                iteration,
-                                instance_seed,
-                                args.symmetric,
-                                strategy,
-                                objective,
-                                None,
-                                args.problem_timeout_seconds,
-                                args.smt_timeout_ms,
-                                args.allow_smt_failures,
-                                False,
-                            )
-                        )
+            smt_rows.extend(
+                run_smt_rows_parallel_until_timeout(
+                    args,
+                    instances,
+                    smt_strategies,
+                    smt_objectives,
+                    modified=False,
+                )
+            )
         if args.smt_modified:
-            for size, iteration, instance_seed in instances:
-                if args.required_city >= size or args.required_day >= size:
-                    continue
-                for strategy in smt_strategies:
-                    for objective in smt_objectives:
-                        futures.append(
-                            executor.submit(
-                                smt_attempt_row,
-                                size,
-                                iteration,
-                                instance_seed,
-                                args.symmetric,
-                                strategy,
-                                objective,
-                                required_orders,
-                                args.problem_timeout_seconds,
-                                args.smt_timeout_ms,
-                                args.allow_smt_failures,
-                                True,
-                            )
-                        )
+            smt_rows.extend(
+                run_smt_rows_parallel_until_timeout(
+                    args,
+                    instances,
+                    smt_strategies,
+                    smt_objectives,
+                    modified=True,
+                )
+            )
+        return smt_rows
 
-        if args.dp and args.overlap_dp_with_smt:
+    if args.dp and args.overlap_dp_with_smt and (args.smt or args.smt_modified):
+        smt_rows: List[Dict[str, object]] = []
+        smt_errors: List[BaseException] = []
+
+        def collect_smt_rows_in_background() -> None:
+            try:
+                smt_rows.extend(collect_smt_rows())
+            except BaseException as error:
+                smt_errors.append(error)
+
+        smt_thread = threading.Thread(target=collect_smt_rows_in_background)
+        smt_thread.start()
+        try:
             rows.extend(run_dp_rows_parallel_until_timeout(args, instances))
-
-        for future in as_completed(futures):
-            rows.append(future.result())
+        finally:
+            smt_thread.join()
+        if smt_errors:
+            raise smt_errors[0]
+        rows.extend(smt_rows)
+    else:
+        if args.dp:
+            rows.extend(run_dp_rows_parallel_until_timeout(args, instances))
+        rows.extend(collect_smt_rows())
 
     rows = sorted(rows, key=row_sort_key)
     validate_rows_against_dp(rows)

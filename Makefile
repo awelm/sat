@@ -16,6 +16,7 @@ DP_MAX_SIZE ?= 0
 STOP_DP_AFTER_TIMEOUT ?= true
 GLOBAL_TIMEOUT_SECONDS ?= 0
 PROBLEM_TIMEOUT_SECONDS ?= 300
+DP_SIZE_TIMEOUT_SECONDS ?= $(PROBLEM_TIMEOUT_SECONDS)
 SMT_TIMEOUT_MS ?= 0
 SMT_STRATEGIES ?= lazy
 SMT_OBJECTIVES ?= auto
@@ -50,6 +51,7 @@ benchmark:
 		--$(if $(filter true,$(STOP_DP_AFTER_TIMEOUT)),stop-dp-after-timeout,no-stop-dp-after-timeout) \
 		--global-timeout-seconds $(GLOBAL_TIMEOUT_SECONDS) \
 		--problem-timeout-seconds $(PROBLEM_TIMEOUT_SECONDS) \
+		--dp-size-timeout-seconds $(DP_SIZE_TIMEOUT_SECONDS) \
 		--smt-strategies $(SMT_STRATEGIES) \
 		--smt-objectives $(SMT_OBJECTIVES) \
 		--smt-timeout-ms $(SMT_TIMEOUT_MS) \
@@ -65,7 +67,7 @@ benchmark:
 		--plot "$(BENCHMARK_DATA_PREFIX).png" \
 		--markdown "$(BENCHMARK_PREFIX).md" \
 		--run-id "$(RUN_ID)" \
-		--cli-invocation '$(PYTHON) benchmark.py --min-size $(BENCHMARK_MIN_SIZE) --max-size $(BENCHMARK_MAX_SIZE) --iterations $(BENCHMARK_ITERATIONS) --seed $(BENCHMARK_SEED) --dp-max-size $(DP_MAX_SIZE) --$(if $(filter true,$(STOP_DP_AFTER_TIMEOUT)),stop-dp-after-timeout,no-stop-dp-after-timeout) --global-timeout-seconds $(GLOBAL_TIMEOUT_SECONDS) --problem-timeout-seconds $(PROBLEM_TIMEOUT_SECONDS) --smt-strategies $(SMT_STRATEGIES) --smt-objectives $(SMT_OBJECTIVES) --smt-timeout-ms $(SMT_TIMEOUT_MS) --dp-workers $(DP_WORKERS) --smt-workers $(SMT_WORKERS) --$(if $(filter true,$(OVERLAP_DP_WITH_SMT)),overlap-dp-with-smt,no-overlap-dp-with-smt) --no-plot --csv $(BENCHMARK_DATA_PREFIX).csv' \
+		--cli-invocation '$(PYTHON) benchmark.py --min-size $(BENCHMARK_MIN_SIZE) --max-size $(BENCHMARK_MAX_SIZE) --iterations $(BENCHMARK_ITERATIONS) --seed $(BENCHMARK_SEED) --dp-max-size $(DP_MAX_SIZE) --$(if $(filter true,$(STOP_DP_AFTER_TIMEOUT)),stop-dp-after-timeout,no-stop-dp-after-timeout) --global-timeout-seconds $(GLOBAL_TIMEOUT_SECONDS) --problem-timeout-seconds $(PROBLEM_TIMEOUT_SECONDS) --dp-size-timeout-seconds $(DP_SIZE_TIMEOUT_SECONDS) --smt-strategies $(SMT_STRATEGIES) --smt-objectives $(SMT_OBJECTIVES) --smt-timeout-ms $(SMT_TIMEOUT_MS) --dp-workers $(DP_WORKERS) --smt-workers $(SMT_WORKERS) --$(if $(filter true,$(OVERLAP_DP_WITH_SMT)),overlap-dp-with-smt,no-overlap-dp-with-smt) --no-plot --csv $(BENCHMARK_DATA_PREFIX).csv' \
 		--param "target=benchmark" \
 		--param "min_size=$(BENCHMARK_MIN_SIZE)" \
 		--param "max_size=$(BENCHMARK_MAX_SIZE)" \
@@ -78,6 +80,7 @@ benchmark:
 		--param "stop_dp_after_timeout=$(STOP_DP_AFTER_TIMEOUT)" \
 		--param "global_timeout_seconds=$(GLOBAL_TIMEOUT_SECONDS)" \
 		--param "problem_timeout_seconds=$(PROBLEM_TIMEOUT_SECONDS)" \
+		--param "dp_size_timeout_seconds=$(DP_SIZE_TIMEOUT_SECONDS)" \
 		--param "smt_strategies=$(SMT_STRATEGIES)" \
 		--param "smt_objectives=$(SMT_OBJECTIVES)" \
 		--param "smt_timeout_ms=$(SMT_TIMEOUT_MS)" \

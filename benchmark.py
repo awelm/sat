@@ -41,7 +41,7 @@ class SolverTimedOut(Exception):
         self.elapsed_seconds = elapsed_seconds
 
 
-TIMEOUT_STATUSES = {"timeout", "problem_timeout", "global_timeout"}
+TIMEOUT_STATUSES = {"timeout", "problem_timeout", "size_timeout", "global_timeout"}
 
 
 def time_solver(
@@ -499,6 +499,26 @@ def dp_problem_timeout_row(
     }
 
 
+def dp_size_timeout_row(
+    size: int,
+    iteration: int,
+    instance_seed: int,
+    symmetric: bool,
+    elapsed_seconds: float,
+) -> Dict[str, object]:
+    return {
+        **empty_row(
+            "dp",
+            size,
+            iteration,
+            instance_seed,
+            symmetric,
+            "size_timeout",
+        ),
+        "time_seconds": elapsed_seconds,
+    }
+
+
 def dp_skipped_after_timeout_row(
     size: int,
     iteration: int,
@@ -651,7 +671,7 @@ def run_dp_rows_parallel_until_timeout(
     args: argparse.Namespace,
     instances: Sequence[Tuple[int, int, int]],
 ) -> List[Dict[str, object]]:
-    if args.dp_workers <= 1:
+    if args.dp_workers <= 1 and args.dp_size_timeout_seconds <= 0:
         return run_dp_rows_until_timeout(args, instances)
 
     rows: List[Dict[str, object]] = []
@@ -693,6 +713,7 @@ def run_dp_rows_parallel_until_timeout(
         context = multiprocessing.get_context("spawn")
         active_attempts: List[Dict[str, object]] = []
         next_instance_index = 0
+        size_started_at = time.perf_counter()
 
         def submit_next_instance() -> bool:
             nonlocal next_instance_index
@@ -732,6 +753,41 @@ def run_dp_rows_parallel_until_timeout(
         try:
             while active_attempts:
                 now = time.perf_counter()
+                if (
+                    args.dp_size_timeout_seconds > 0
+                    and now - size_started_at >= args.dp_size_timeout_seconds
+                ):
+                    timed_out_attempt = active_attempts.pop(0)
+                    elapsed_seconds = now - size_started_at
+                    for attempt in [timed_out_attempt] + active_attempts:
+                        process = attempt["process"]
+                        terminate_process(process)
+                        result_queue = attempt["queue"]
+                        close_queue(result_queue)
+                    rows.append(
+                        dp_size_timeout_row(
+                            int(timed_out_attempt["size"]),
+                            int(timed_out_attempt["iteration"]),
+                            int(timed_out_attempt["instance_seed"]),
+                            args.symmetric,
+                            elapsed_seconds,
+                        )
+                    )
+                    for attempt in active_attempts:
+                        rows.append(
+                            dp_skipped_after_timeout_row(
+                                int(attempt["size"]),
+                                int(attempt["iteration"]),
+                                int(attempt["instance_seed"]),
+                                args.symmetric,
+                            )
+                        )
+                    active_attempts.clear()
+                    stop_this_size = True
+                    if args.stop_dp_after_timeout:
+                        stopped_after_timeout = True
+                    break
+
                 timed_out_attempt = None
                 if args.problem_timeout_seconds > 0:
                     for attempt in active_attempts:
@@ -1045,6 +1101,7 @@ def main() -> None:
     )
     parser.add_argument("--global-timeout-seconds", type=float, default=0)
     parser.add_argument("--problem-timeout-seconds", type=float, default=0)
+    parser.add_argument("--dp-size-timeout-seconds", type=float, default=0)
     parser.add_argument("--smt-objectives", default="auto")
     parser.add_argument("--smt-strategies", default="lazy")
     parser.add_argument("--smt-timeout-ms", type=int, default=0)
@@ -1071,10 +1128,12 @@ def main() -> None:
     if args.smt_workers < 1:
         parser.error("--smt-workers must be at least 1")
     if (
-        (args.dp_workers > 1 or args.smt_workers > 1)
+        (args.dp_workers > 1 or args.smt_workers > 1 or args.dp_size_timeout_seconds > 0)
         and args.global_timeout_seconds > 0
     ):
-        parser.error("parallel workers require --global-timeout-seconds 0")
+        parser.error(
+            "parallel workers or DP size timeouts require --global-timeout-seconds 0"
+        )
 
     smt_objectives = parse_list(args.smt_objectives)
     smt_strategies = parse_list(args.smt_strategies)
@@ -1083,7 +1142,7 @@ def main() -> None:
         for strategy in smt_strategies
         for objective in smt_objectives
     ]
-    if args.dp_workers > 1 or args.smt_workers > 1:
+    if args.dp_workers > 1 or args.smt_workers > 1 or args.dp_size_timeout_seconds > 0:
         run_parallel_benchmark(args, smt_strategies, smt_objectives, smt_labels)
         return
     smt_times_by_label: Dict[str, Dict[int, List[float]]] = {

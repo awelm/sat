@@ -24,6 +24,7 @@ SUMMARY_FIELDNAMES = [
     "attempts",
     "ok",
     "failures",
+    "status_counts",
     "median_seconds",
     "mean_seconds",
     "min_seconds",
@@ -160,6 +161,10 @@ def summarize_solver_rows(rows: Iterable[TimingRow]) -> List[Dict[str, object]]:
             for row in solver_rows
             if row.status == "ok" and row.time_seconds is not None
         ]
+        statuses = sorted(
+            (status, sum(1 for row in solver_rows if row.status == status))
+            for status in {row.status for row in solver_rows}
+        )
         summary.append(
             {
                 "solver": solver,
@@ -167,6 +172,9 @@ def summarize_solver_rows(rows: Iterable[TimingRow]) -> List[Dict[str, object]]:
                 "attempts": len(solver_rows),
                 "ok": len(ok_times),
                 "failures": len(solver_rows) - len(ok_times),
+                "status_counts": ", ".join(
+                    f"{status}:{count}" for status, count in statuses
+                ),
                 "median_seconds": format_float(median(ok_times)),
                 "mean_seconds": format_float(mean(ok_times)),
                 "min_seconds": format_float(min(ok_times) if ok_times else None),
@@ -356,16 +364,28 @@ def write_plot(
             continue
         series[solver].append((int(row["size"]), median_seconds))
 
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=180)
     if not series:
-        raise ValueError("no plottable timing data found")
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.5,
+            "No successful DP or SMT timings to plot",
+            ha="center",
+            va="center",
+            fontsize=16,
+            color="#374151",
+        )
+        fig.savefig(path, bbox_inches="tight")
+        plt.close(fig)
+        return
 
     plotted_sizes = [
         size
         for points in series.values()
         for size, _ in points
     ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=180)
     colors = {"dp": "#d62728", candidate: "#1f77b4"}
     markers = {"dp": "o", candidate: "o"}
     for solver in (candidate, "dp"):
@@ -508,6 +528,7 @@ def write_markdown(
                 "attempts",
                 "ok",
                 "failures",
+                "status_counts",
                 "median_seconds",
                 "mean_seconds",
                 "min_seconds",

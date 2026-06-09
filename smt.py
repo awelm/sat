@@ -5,13 +5,12 @@ from typing import Dict, List, Optional, Tuple
 from z3 import And, Bool, If, Implies, Int, Not, Optimize, Sum, is_true, sat
 
 
-# Given an adjacency matrix describing a graph, return the minimum cost and route that
-# starts at city 0, visits each city exactly once and returns to city 0.
 def smt(
     distances: List[List[int]],
     required_orders: Optional[Dict[int, int]] = None,
     timeout_ms: int = 0,
 ) -> Tuple[int, List[int]]:
+    """Search a Boolean adjacency matrix for the cheapest valid TSP tour."""
     num_cities = len(distances)
     if num_cities == 0:
         return -1, []
@@ -24,62 +23,77 @@ def smt(
 
     cities = range(num_cities)
 
-    # edge[i][j] means the tour goes directly from city i to city j.
-    edge = [[Bool(f"edge_{i}_{j}") for j in cities] for i in cities]
-    for i in cities:
-        solver.add(Not(edge[i][i]))
+    # Same shape as the input adjacency matrix:
+    # use_edge[i][j] asks whether the tour travels directly from city i to city j.
+    use_edge = [[Bool(f"use_edge_{i}_{j}") for j in cities] for i in cities]
+    for city in cities:
+        solver.add(Not(use_edge[city][city]))
 
-    # order[i] is the day/position when city i is visited. City 0 is the start.
-    order = [Int(f"order_{i}") for i in cities]
-    solver.add(order[0] == 0)
-    for i in range(1, num_cities):
-        solver.add(And(order[i] >= 1, order[i] < num_cities))
+    # visit_order[i] is the day/position when city i is visited. City 0 is the start.
+    visit_order = [Int(f"visit_order_{i}") for i in cities]
+    solver.add(visit_order[0] == 0)
+    for city in range(1, num_cities):
+        solver.add(And(visit_order[city] >= 1, visit_order[city] < num_cities))
 
     if required_orders:
         for city, day in required_orders.items():
             if not (0 <= city < num_cities and 0 <= day < num_cities):
                 raise ValueError("required_orders contains out of range values")
-            solver.add(order[city] == day)
+            solver.add(visit_order[city] == day)
 
-    # Every city has exactly one outgoing edge and one incoming edge.
-    for i in cities:
-        solver.add(Sum([If(edge[i][j], 1, 0) for j in cities]) == 1)
-        solver.add(Sum([If(edge[j][i], 1, 0) for j in cities]) == 1)
+    # Each row chooses where that city goes next.
+    # Each column chooses where that city is reached from.
+    for city in cities:
+        solver.add(_exactly_one(use_edge[city]))
+        solver.add(_exactly_one([use_edge[source][city] for source in cities]))
 
-    # If we travel i -> j, then j must be the next city in the visit order.
-    # This rules out disconnected subtours.
-    for i in cities:
-        for j in cities:
-            if i == j:
+    # Chosen edges must connect consecutive visit positions, which prevents subtours.
+    for source in cities:
+        for destination in cities:
+            if source == destination:
                 continue
-            if j == 0:
-                solver.add(Implies(edge[i][j], order[i] == num_cities - 1))
-            elif i == 0:
-                solver.add(Implies(edge[i][j], order[j] == 1))
-            else:
-                solver.add(Implies(edge[i][j], order[j] == order[i] + 1))
+            solver.add(
+                Implies(
+                    use_edge[source][destination],
+                    _is_next_visit(visit_order, source, destination, num_cities),
+                )
+            )
 
-    objective_distances = _reduce_assignment_objective_distances(distances)
-    solver.minimize(
-        Sum(
-            [
-                If(edge[i][j], objective_distances[i][j], 0)
-                for i in cities
-                for j in cities
-                if i != j
-            ]
-        )
-    )
+    objective_distances = _normalize_distances_for_solver(distances)
+    solver.minimize(_selected_edge_cost(use_edge, objective_distances))
 
     if solver.check() != sat:
         return -1, []
 
-    model = solver.model()
-    successors = _get_successors(model, edge)
-    return _tour_cost(distances, successors), _build_tour_path(successors, 0)
+    path = _path_from_successors(_successors_from_model(solver.model(), use_edge), 0)
+    return _path_cost(distances, path), path
 
 
-def _reduce_assignment_objective_distances(distances: List[List[int]]) -> List[List[int]]:
+def _exactly_one(choices):
+    return Sum([If(choice, 1, 0) for choice in choices]) == 1
+
+
+def _is_next_visit(visit_order, source: int, destination: int, num_cities: int):
+    if destination == 0:
+        return visit_order[source] == num_cities - 1
+    if source == 0:
+        return visit_order[destination] == 1
+    return visit_order[destination] == visit_order[source] + 1
+
+
+def _selected_edge_cost(use_edge, distances: List[List[int]]):
+    cities = range(len(distances))
+    return Sum(
+        [
+            If(use_edge[i][j], distances[i][j], 0)
+            for i in cities
+            for j in cities
+            if i != j
+        ]
+    )
+
+
+def _normalize_distances_for_solver(distances: List[List[int]]) -> List[List[int]]:
     """Shift edge costs without changing which tour is cheapest."""
     num_cities = len(distances)
     reduced = [[0] * num_cities for _ in range(num_cities)]
@@ -103,26 +117,26 @@ def _reduce_assignment_objective_distances(distances: List[List[int]]) -> List[L
     return reduced
 
 
-def _get_successors(model, edge: List[List[Bool]]) -> List[int]:
-    successors = [-1] * len(edge)
-    for i, row in enumerate(edge):
-        for j, decision in enumerate(row):
-            if is_true(model.evaluate(decision, model_completion=True)):
-                successors[i] = j
+def _successors_from_model(model, use_edge) -> List[int]:
+    successors = [-1] * len(use_edge)
+    for source, row in enumerate(use_edge):
+        for destination, selected in enumerate(row):
+            if is_true(model.evaluate(selected, model_completion=True)):
+                successors[source] = destination
                 break
-        if successors[i] == -1:
-            raise RuntimeError(f"solver returned an incomplete tour for city {i}")
+        if successors[source] == -1:
+            raise RuntimeError(f"solver returned an incomplete tour for city {source}")
     return successors
 
 
-def _build_tour_path(successors: List[int], start_city: int) -> List[int]:
-    curr_city = start_city
+def _path_from_successors(successors: List[int], start_city: int) -> List[int]:
+    city = start_city
     path = [start_city]
     for _ in range(len(successors) - 1):
-        curr_city = successors[curr_city]
-        path.append(curr_city)
+        city = successors[city]
+        path.append(city)
     return path + [start_city]
 
 
-def _tour_cost(distances: List[List[int]], successors: List[int]) -> int:
-    return sum(distances[city][successors[city]] for city in range(len(successors)))
+def _path_cost(distances: List[List[int]], path: List[int]) -> int:
+    return sum(distances[path[i]][path[i + 1]] for i in range(len(path) - 1))

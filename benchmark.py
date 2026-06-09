@@ -504,8 +504,8 @@ def terminate_process(process: multiprocessing.Process) -> None:
 
 
 def close_queue(queue: multiprocessing.Queue) -> None:
+    queue.cancel_join_thread()
     queue.close()
-    queue.join_thread()
 
 
 def smt_problem_timeout_row(
@@ -624,7 +624,7 @@ def read_child_attempt_result(
             f"with exit code {process.exitcode}"
         )
     try:
-        kind, payload = result_queue.get_nowait()
+        kind, payload = result_queue.get(timeout=5)
     except Empty as error:
         raise RuntimeError(
             f"{solver} worker produced no result for size={size} iteration={iteration}"

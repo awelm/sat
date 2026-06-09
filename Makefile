@@ -18,11 +18,11 @@ GLOBAL_TIMEOUT_SECONDS ?= 0
 PROBLEM_TIMEOUT_SECONDS ?= 300
 DP_SIZE_TIMEOUT_SECONDS ?= $(PROBLEM_TIMEOUT_SECONDS)
 SMT_TIMEOUT_MS ?= 0
-SMT_STRATEGIES ?= lazy
-SMT_OBJECTIVES ?= auto
+SMT_STRATEGIES ?= ordered
+SMT_OBJECTIVES ?= linear
 BOOTSTRAP_SAMPLES ?= 10000
 MIN_PAIRS ?= 10
-CANDIDATE_SOLVER ?= smt:lazy:auto
+CANDIDATE_SOLVER ?= smt:ordered:linear
 
 BENCHMARK_PREFIX := $(RESULTS_DIR)/benchmark-$(RUN_ID)
 BENCHMARK_DATA_PREFIX := $(DATA_DIR)/benchmark-$(RUN_ID)
@@ -87,5 +87,5 @@ benchmark:
 		--bootstrap-samples $(BOOTSTRAP_SAMPLES) \
 		--min-pairs $(MIN_PAIRS)
 	@rm -f "$(RESULTS_DIR)/benchmark-latest.md"
-	@cp "$(BENCHMARK_PREFIX).md" "$(RESULTS_DIR)/benchmark-latest.md"
+	@ln -s "$(notdir $(BENCHMARK_PREFIX).md)" "$(RESULTS_DIR)/benchmark-latest.md"
 	@echo "Wrote benchmark report $(BENCHMARK_PREFIX).md"

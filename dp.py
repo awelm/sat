@@ -1,56 +1,45 @@
-# This code is mostly taken from: https://www.interviewbit.com/blog/travelling-salesman-problem/
-
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
-
-MAX = 999999
-
-
-def TSP(
-    mask: int,
-    pos: int,
-    graph: List[List[int]],
-    dp: List[List[int]],
-    next_move: Dict[Tuple[int, int], int],
-    n: int,
-    visited: int,
-) -> int:
-    if mask == visited:
-        return graph[pos][0]
-
-    if dp[mask][pos] != -1:
-        return dp[mask][pos]
-
-    ans = MAX
-    for city in range(n):
-        if (mask & (1 << city)) == 0:
-            new_cost = graph[pos][city] + TSP(
-                mask | (1 << city), city, graph, dp, next_move, n, visited
-            )
-            if new_cost < ans:
-                ans = new_cost
-                next_move[(mask, pos)] = city
-
-    dp[mask][pos] = ans
-    return ans
+from functools import cache
+from typing import List, Tuple
 
 
 def dp(graph: List[List[int]]) -> Tuple[int, List[int]]:
     n = len(graph)
-    visited = (1 << n) - 1
+    if n == 0:
+        return -1, []
+    if n == 1:
+        return 0, [0, 0]
 
-    dp_tbl = [[-1] * n for _ in range(1 << n)]
-    next_move = {}
+    all_visited = (1 << n) - 1
 
-    cost = TSP(1, 0, graph, dp_tbl, next_move, n, visited)
+    @cache
+    def best_cost(mask: int, city: int) -> int:
+        if mask == all_visited:
+            return graph[city][0]
 
-    # Reconstruct optimal path (start and end at city 0)
-    mask, pos = 1, 0
+        return min(
+            graph[city][next_city] + best_cost(mask | (1 << next_city), next_city)
+            for next_city in range(n)
+            if not mask & (1 << next_city)
+        )
+
     path = [0]
+    mask = 1
+    city = 0
     while len(path) < n:
-        pos = next_move[(mask, pos)]
-        path.append(pos)
-        mask |= 1 << pos
+        next_city = min(
+            (
+                next_city
+                for next_city in range(n)
+                if not mask & (1 << next_city)
+            ),
+            key=lambda next_city: graph[city][next_city]
+            + best_cost(mask | (1 << next_city), next_city),
+        )
+        path.append(next_city)
+        mask |= 1 << next_city
+        city = next_city
+
     path.append(0)
-    return cost, path
+    return best_cost(1, 0), path

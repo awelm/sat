@@ -15,7 +15,7 @@ from queue import Empty
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from dp import dp
-from smt import SmtStats, smt
+from smt import smt
 
 
 def build_distances(size: int, rng: random.Random, symmetric: bool) -> List[List[int]]:
@@ -287,7 +287,6 @@ def smt_attempt_row(
     modified: bool,
 ) -> Dict[str, object]:
     distances = build_distances(size, random.Random(instance_seed), symmetric=symmetric)
-    stats = SmtStats()
     solver_name = solver_name_for_smt_attempt(strategy, objective, modified)
     effective_timeout_seconds = attempt_timeout_seconds(None, problem_timeout_seconds)
 
@@ -296,9 +295,6 @@ def smt_attempt_row(
             lambda: smt(
                 distances,
                 required_orders,
-                objective=objective,
-                strategy=strategy,
-                stats=stats,
                 timeout_ms=smt_timeout_ms_for_attempt(
                     smt_timeout_ms,
                     effective_timeout_seconds,
@@ -321,12 +317,9 @@ def smt_attempt_row(
                 ),
             ),
             "time_seconds": error.elapsed_seconds,
-            "check_count": stats.check_count,
-            "subtour_cut_count": stats.subtour_cut_count,
-            "subtour_iterations": json.dumps(stats.subtour_iterations),
-            "strategy": stats.strategy or strategy,
-            "uses_order_constraints": stats.uses_order_constraints,
-            "objective": stats.resolved_objective or objective,
+            "strategy": strategy,
+            "uses_order_constraints": True,
+            "objective": objective,
         }
 
     cost, path = result
@@ -353,12 +346,9 @@ def smt_attempt_row(
                 status,
             ),
             "time_seconds": elapsed_seconds,
-            "check_count": stats.check_count,
-            "subtour_cut_count": stats.subtour_cut_count,
-            "subtour_iterations": json.dumps(stats.subtour_iterations),
-            "strategy": stats.strategy,
-            "uses_order_constraints": stats.uses_order_constraints,
-            "objective": stats.resolved_objective,
+            "strategy": strategy,
+            "uses_order_constraints": True,
+            "objective": objective,
         }
 
     assert_valid_tour(path, size, solver_name)
@@ -378,12 +368,12 @@ def smt_attempt_row(
         "status": "ok",
         "time_seconds": elapsed_seconds,
         "cost": cost,
-        "check_count": stats.check_count,
-        "subtour_cut_count": stats.subtour_cut_count,
-        "subtour_iterations": json.dumps(stats.subtour_iterations),
-        "strategy": stats.strategy,
-        "uses_order_constraints": stats.uses_order_constraints,
-        "objective": stats.resolved_objective,
+        "check_count": "",
+        "subtour_cut_count": "",
+        "subtour_iterations": "",
+        "strategy": strategy,
+        "uses_order_constraints": True,
+        "objective": objective,
         "path": json.dumps(path),
     }
 
@@ -547,7 +537,7 @@ def smt_problem_timeout_row(
             objective=objective,
         ),
         "time_seconds": elapsed_seconds,
-        "uses_order_constraints": bool(required_orders),
+        "uses_order_constraints": True,
     }
 
 
@@ -1331,8 +1321,8 @@ def main() -> None:
     parser.add_argument("--global-timeout-seconds", type=float, default=0)
     parser.add_argument("--problem-timeout-seconds", type=float, default=0)
     parser.add_argument("--dp-size-timeout-seconds", type=float, default=0)
-    parser.add_argument("--smt-objectives", default="auto")
-    parser.add_argument("--smt-strategies", default="lazy")
+    parser.add_argument("--smt-objectives", default="linear")
+    parser.add_argument("--smt-strategies", default="ordered")
     parser.add_argument("--smt-timeout-ms", type=int, default=0)
     parser.add_argument("--dp-workers", type=int, default=1)
     parser.add_argument("--smt-workers", type=int, default=1)
@@ -1366,6 +1356,16 @@ def main() -> None:
 
     smt_objectives = parse_list(args.smt_objectives)
     smt_strategies = parse_list(args.smt_strategies)
+    unsupported_strategies = sorted(set(smt_strategies) - {"ordered"})
+    unsupported_objectives = sorted(set(smt_objectives) - {"linear"})
+    if unsupported_strategies:
+        parser.error(
+            "the simplified SMT solver only supports --smt-strategies ordered"
+        )
+    if unsupported_objectives:
+        parser.error(
+            "the simplified SMT solver only supports --smt-objectives linear"
+        )
     smt_labels = [
         f"{strategy}:{objective}"
         for strategy in smt_strategies
@@ -1456,14 +1456,10 @@ def main() -> None:
                                 }
                             )
                             continue
-                        stats = SmtStats()
                         try:
                             smt_time, smt_result = time_solver(
                                 lambda: smt(
                                     distances,
-                                    objective=objective,
-                                    strategy=strategy,
-                                    stats=stats,
                                     timeout_ms=smt_timeout_ms_for_attempt(
                                         args.smt_timeout_ms,
                                         effective_timeout_seconds,
@@ -1498,14 +1494,12 @@ def main() -> None:
                                     "status": status,
                                     "time_seconds": error.elapsed_seconds,
                                     "cost": "",
-                                    "check_count": stats.check_count,
-                                    "subtour_cut_count": stats.subtour_cut_count,
-                                    "subtour_iterations": json.dumps(
-                                        stats.subtour_iterations
-                                    ),
-                                    "strategy": stats.strategy or strategy,
-                                    "uses_order_constraints": stats.uses_order_constraints,
-                                    "objective": stats.resolved_objective or objective,
+                                    "check_count": "",
+                                    "subtour_cut_count": "",
+                                    "subtour_iterations": "",
+                                    "strategy": strategy,
+                                    "uses_order_constraints": True,
+                                    "objective": objective,
                                     "path": "",
                                 }
                             )
@@ -1538,16 +1532,12 @@ def main() -> None:
                                     "status": status,
                                     "time_seconds": smt_time,
                                     "cost": "",
-                                    "check_count": stats.check_count,
-                                    "subtour_cut_count": stats.subtour_cut_count,
-                                    "subtour_iterations": json.dumps(
-                                        stats.subtour_iterations
-                                    ),
-                                    "strategy": stats.strategy,
-                                    "uses_order_constraints": (
-                                        stats.uses_order_constraints
-                                    ),
-                                    "objective": stats.resolved_objective,
+                                    "check_count": "",
+                                    "subtour_cut_count": "",
+                                    "subtour_iterations": "",
+                                    "strategy": strategy,
+                                    "uses_order_constraints": True,
+                                    "objective": objective,
                                     "path": "",
                                 }
                             )
@@ -1569,12 +1559,12 @@ def main() -> None:
                                 "status": "ok",
                                 "time_seconds": smt_time,
                                 "cost": smt_cost,
-                                "check_count": stats.check_count,
-                                "subtour_cut_count": stats.subtour_cut_count,
-                                "subtour_iterations": json.dumps(stats.subtour_iterations),
-                                "strategy": stats.strategy,
-                                "uses_order_constraints": stats.uses_order_constraints,
-                                "objective": stats.resolved_objective,
+                                "check_count": "",
+                                "subtour_cut_count": "",
+                                "subtour_iterations": "",
+                                "strategy": strategy,
+                                "uses_order_constraints": True,
+                                "objective": objective,
                                 "path": json.dumps(smt_path),
                             }
                         )
@@ -1619,15 +1609,11 @@ def main() -> None:
                                 }
                             )
                             continue
-                        stats = SmtStats()
                         try:
                             modified_time, modified_result = time_solver(
                                 lambda: smt(
                                     distances,
                                     required_orders,
-                                    objective=objective,
-                                    strategy=strategy,
-                                    stats=stats,
                                     timeout_ms=smt_timeout_ms_for_attempt(
                                         args.smt_timeout_ms,
                                         effective_timeout_seconds,
@@ -1662,14 +1648,12 @@ def main() -> None:
                                     "status": status,
                                     "time_seconds": error.elapsed_seconds,
                                     "cost": "",
-                                    "check_count": stats.check_count,
-                                    "subtour_cut_count": stats.subtour_cut_count,
-                                    "subtour_iterations": json.dumps(
-                                        stats.subtour_iterations
-                                    ),
-                                    "strategy": stats.strategy or strategy,
-                                    "uses_order_constraints": stats.uses_order_constraints,
-                                    "objective": stats.resolved_objective or objective,
+                                    "check_count": "",
+                                    "subtour_cut_count": "",
+                                    "subtour_iterations": "",
+                                    "strategy": strategy,
+                                    "uses_order_constraints": True,
+                                    "objective": objective,
                                     "path": "",
                                 }
                             )
@@ -1702,16 +1686,12 @@ def main() -> None:
                                     "status": status,
                                     "time_seconds": modified_time,
                                     "cost": "",
-                                    "check_count": stats.check_count,
-                                    "subtour_cut_count": stats.subtour_cut_count,
-                                    "subtour_iterations": json.dumps(
-                                        stats.subtour_iterations
-                                    ),
-                                    "strategy": stats.strategy,
-                                    "uses_order_constraints": (
-                                        stats.uses_order_constraints
-                                    ),
-                                    "objective": stats.resolved_objective,
+                                    "check_count": "",
+                                    "subtour_cut_count": "",
+                                    "subtour_iterations": "",
+                                    "strategy": strategy,
+                                    "uses_order_constraints": True,
+                                    "objective": objective,
                                     "path": "",
                                 }
                             )
@@ -1740,12 +1720,12 @@ def main() -> None:
                                 "status": "ok",
                                 "time_seconds": modified_time,
                                 "cost": modified_cost,
-                                "check_count": stats.check_count,
-                                "subtour_cut_count": stats.subtour_cut_count,
-                                "subtour_iterations": json.dumps(stats.subtour_iterations),
-                                "strategy": stats.strategy,
-                                "uses_order_constraints": stats.uses_order_constraints,
-                                "objective": stats.resolved_objective,
+                                "check_count": "",
+                                "subtour_cut_count": "",
+                                "subtour_iterations": "",
+                                "strategy": strategy,
+                                "uses_order_constraints": True,
+                                "objective": objective,
                                 "path": json.dumps(modified_path),
                             }
                         )

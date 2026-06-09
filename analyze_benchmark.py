@@ -578,7 +578,7 @@ def write_markdown(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("csv", type=Path)
-    parser.add_argument("--candidate", default="smt:lazy:auto")
+    parser.add_argument("--candidate", default="smt:ordered:linear")
     parser.add_argument("--plot", type=Path, default=None)
     parser.add_argument("--markdown", type=Path, default=None)
     parser.add_argument("--run-id", default="")

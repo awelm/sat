@@ -44,53 +44,69 @@ def smt(
     # Each row chooses where that city goes next.
     # Each column chooses where that city is reached from.
     for city in cities:
-        solver.add(_exactly_one(use_edge[city]))
-        solver.add(_exactly_one([use_edge[source][city] for source in cities]))
+        outgoing_edges = [
+            If(use_edge[city][destination], 1, 0)
+            for destination in cities
+        ]
+        incoming_edges = [
+            If(use_edge[source][city], 1, 0)
+            for source in cities
+        ]
+        solver.add(Sum(outgoing_edges) == 1)
+        solver.add(Sum(incoming_edges) == 1)
 
     # Chosen edges must connect consecutive visit positions, which prevents subtours.
     for source in cities:
         for destination in cities:
             if source == destination:
                 continue
-            solver.add(
-                Implies(
-                    use_edge[source][destination],
-                    _is_next_visit(visit_order, source, destination, num_cities),
+            if destination == 0:
+                # Returning to city 0 is only valid from the final visit position.
+                solver.add(
+                    Implies(
+                        use_edge[source][0],
+                        visit_order[source] == num_cities - 1,
+                    )
                 )
-            )
+            elif source == 0:
+                # Leaving city 0 starts the tour, so the destination is visit 1.
+                solver.add(
+                    Implies(
+                        use_edge[0][destination],
+                        visit_order[destination] == 1,
+                    )
+                )
+            else:
+                # Every other selected edge advances the visit position by exactly one.
+                solver.add(
+                    Implies(
+                        use_edge[source][destination],
+                        visit_order[destination] == visit_order[source] + 1,
+                    )
+                )
 
     objective_distances = _normalize_distances_for_solver(distances)
-    solver.minimize(_selected_edge_cost(use_edge, objective_distances))
+    solver.minimize(
+        Sum(
+            [
+                If(
+                    use_edge[source][destination],
+                    objective_distances[source][destination],
+                    0,
+                )
+                for source in cities
+                for destination in cities
+                if source != destination
+            ]
+        )
+    )
 
     if solver.check() != sat:
         return -1, []
 
     path = _path_from_successors(_successors_from_model(solver.model(), use_edge), 0)
-    return _path_cost(distances, path), path
-
-
-def _exactly_one(choices):
-    return Sum([If(choice, 1, 0) for choice in choices]) == 1
-
-
-def _is_next_visit(visit_order, source: int, destination: int, num_cities: int):
-    if destination == 0:
-        return visit_order[source] == num_cities - 1
-    if source == 0:
-        return visit_order[destination] == 1
-    return visit_order[destination] == visit_order[source] + 1
-
-
-def _selected_edge_cost(use_edge, distances: List[List[int]]):
-    cities = range(len(distances))
-    return Sum(
-        [
-            If(use_edge[i][j], distances[i][j], 0)
-            for i in cities
-            for j in cities
-            if i != j
-        ]
-    )
+    cost = sum(distances[path[i]][path[i + 1]] for i in range(len(path) - 1))
+    return cost, path
 
 
 def _normalize_distances_for_solver(distances: List[List[int]]) -> List[List[int]]:
@@ -136,7 +152,3 @@ def _path_from_successors(successors: List[int], start_city: int) -> List[int]:
         city = successors[city]
         path.append(city)
     return path + [start_city]
-
-
-def _path_cost(distances: List[List[int]], path: List[int]) -> int:
-    return sum(distances[path[i]][path[i + 1]] for i in range(len(path) - 1))
